@@ -1,0 +1,16 @@
+# Modelfile — Jarvis (à remplir après export GGUF)
+# Usage : ollama create jarvis -f Modelfile
+
+# Remplace ce chemin par ton fichier GGUF exporté
+FROM ./export/jarvis-q4.gguf
+
+# Le prompt SYSTEM est injecté depuis ./system_prompt.txt par ./run_jarvis.sh create
+# (fichier généré: Jarvis/.Modelfile.generated)
+
+# Température basse = réponses plus déterministes (bien pour les actions)
+PARAMETER temperature 0.3
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.1
+PARAMETER num_ctx 4096
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|eot_id|>"

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>J.A.R.V.I.S — Landing Page</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="scanlines"></div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">J</span>
+      <div>
+        <div class="brand-title">J.A.R.V.I.S</div>
+        <div class="brand-subtitle">Just A Rather Very Intelligent System</div>
+      </div>
+    </div>
+    <div class="status">
+      <span class="status-dot"></span>
+      <span>Assistant local actif</span>
+    </div>
+  </header>
+
+  <!-- Contenu principal avec explication de JARVIS -->
+  <main class="shell">
+    <section class="hero card">
+      <div class="eyebrow">Assistant personnel local</div>
+      <h1>Un cockpit intelligent pour parler, agir et automatiser.</h1>
+      <p class="lead">
+        Jarvis combine un modèle local, des outils métiers et une interface textuelle pour gérer
+        les mails, le calendrier et les alarmes avec un coeur IA local, sans dépendre d'API LLM commerciales.
+      </p>
+
+      <div class="cta-row">
+        <a class="btn primary" href="http://localhost:8000/test_interface.html">Ouvrir l'interface</a>
+        <!-- <a class="btn secondary" href="../README.md">Lire le projet</a> -->
+      </div>
+
+      <div class="hero-grid">
+        <div class="stat">
+          <div class="stat-value">100%</div>
+          <div class="stat-label">local / contrôlé</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">3</div>
+          <div class="stat-label">domaines métiers</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">MLX</div>
+          <div class="stat-label">fine-tuning Apple Silicon</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Comparaison et Constatation -->
+    <section class="card compare">
+      <div class="section-title">Problème actuel vs solution Jarvis</div>
+      <div class="compare-grid">
+        <div class="compare-col">
+          <h3 class="compare-heading bad">Problème actuel</h3>
+          <ul>
+            <li>Données envoyées vers des services externes</li>
+            <li>Coûts mensuels récurrents (abonnements SaaS)</li>
+            <li>Outils fragmentés: mail, agenda, rappels séparés</li>
+            <li>Peu de contrôle sur le comportement du modèle</li>
+          </ul>
+        </div>
+        <div class="compare-col">
+          <h3 class="compare-heading good">Solution Jarvis</h3>
+          <ul>
+            <li>Traitement IA local avec Ollama</li>
+            <li>Projet open-source avec coût d'usage nul</li>
+            <li>Mail + agenda + alarmes dans une même interface</li>
+            <li>Orchestration métier personnalisée et explicable</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Fonctionnalités -->
+    <section class="features">
+      <article class="card feature">
+        <div class="feature-index">01</div>
+        <h2>Actions réelles</h2>
+        <p>Envoi de mails, lecture de boîte, événements calendrier et alarmes locales.</p>
+      </article>
+
+      <article class="card feature">
+        <div class="feature-index">02</div>
+        <h2>Conversation naturelle</h2>
+        <p>Une couche de dialogue locale conserve le contexte et garde le ton simple, direct et utile.</p>
+      </article>
+
+      <article class="card feature">
+        <div class="feature-index">03</div>
+        <h2>Architecture contrôlée</h2>
+        <p>Le code orchestre les intentions, les états multi-tours et les intégrations Google / Ollama.</p>
+      </article>
+    </section>
+
+    <!-- Fonctionnement -->
+    <section class="card how">
+      <div class="section-title">Comment ça fonctionne</div>
+      <div class="steps-grid">
+        <div class="step-card">
+          <div class="step-num">01</div>
+          <div class="step-name">Tu écris</div>
+          <p>Message naturel dans l'interface ou sur Discord.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">02</div>
+          <div class="step-name">Intent détecté</div>
+          <p>Le routeur interprète l'intention (mail, agenda, alarme).</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">03</div>
+          <div class="step-name">Action exécutée</div>
+          <p>L'API appelle le bon module métier et exécute l'action.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">04</div>
+          <div class="step-name">Réponse claire</div>
+          <p>Jarvis confirme le résultat avec un retour lisible.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- KPIs et ROI chiffre -->
+    <section class="card kpis">
+      <div class="section-title">ROI et KPIs</div>
+      <div class="kpi-grid">
+        <div class="kpi-item">
+          <div class="kpi-value">30 min</div>
+          <div class="kpi-label">Temps gagné cible / jour</div>
+        </div>
+        <div class="kpi-item">
+          <div class="kpi-value">&ge; 85%</div>
+          <div class="kpi-label">Taux de succès des actions</div>
+        </div>
+        <div class="kpi-item">
+          <div class="kpi-value">&le; 5%</div>
+          <div class="kpi-label">Taux d'erreur critique</div>
+        </div>
+        <div class="kpi-item">
+          <div class="kpi-value">&ge; 60%</div>
+          <div class="kpi-label">Activation J+7</div>
+        </div>
+        <div class="kpi-item">
+          <div class="kpi-value">&ge; 40%</div>
+          <div class="kpi-label">Rétention J+30</div>
+        </div>
+        <div class="kpi-item">
+          <div class="kpi-value">&ge; 5</div>
+          <div class="kpi-label">Actions utiles / jour</div>
+        </div>
+        <div class="kpi-item">
+          <div class="kpi-value">~250EUR</div>
+          <div class="kpi-label">Gain mensuel estimé</div>
+        </div>
+        <div class="kpi-item">
+          <div class="kpi-value">~400-730%</div>
+          <div class="kpi-label">ROI mensuel estimé</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Explication de ce que Jarvis sait faire pour les differentes fonctionnalités -->
+    <section class="card roadmap">
+      <div class="section-title">Ce que Jarvis sait faire</div>
+      <div class="roadmap-grid">
+        <div class="roadmap-item"><span>Mail</span><small>Envoyer, lire, résumer</small></div>
+        <div class="roadmap-item"><span>Agenda</span><small>Créer, lister, supprimer</small></div>
+        <div class="roadmap-item"><span>Alarmes</span><small>Créer avec notification + son</small></div>
+        <div class="roadmap-item"><span>Dialogue</span><small>Discussion naturelle locale</small></div>
+      </div>
+    </section>
+
+    <!-- Exemples d'utilisation avec les commandes  -->
+    <section class="card showcase">
+      <div class="section-title">Exemple de ligne de commande</div>
+      <pre>/sendmail "client@exemple.com" "Objet" "Message"
+/setalarm "2026-04-13 14:30" "Pause"
+/addevent "Réunion" "2026-04-13 15:00" "2026-04-13 16:00"
+/eventsweek</pre>
+    </section>
+
+    <!-- Exemples de conversation -->
+    <section class="card showcase">
+      <div class="section-title">Exemple conversation</div>
+      <pre>"Envoie un mail à client@exemple.com sujet Devis message Bonjour"
+"Mets une alarme demain à 7:30"
+"Crée un événement lundi prochain à 10h pour réunion client"</pre>
+    </section>
+  </main>
+
+  <!-- Pied de page -->
+  <footer class="footer">
+    <span>Projet local Jarvis</span>
+    <span>Interface de démonstration • landing page • assistant métier</span>
+  </footer>
+</body>
+</html>
