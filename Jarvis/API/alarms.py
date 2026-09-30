@@ -161,6 +161,25 @@ class AlarmStore:
 
         return deleted_count
 
+    def delete_alarms_with_label_prefix(self, prefix: str) -> int:
+        """Supprime les alarmes actives dont le titre commence par prefix (ex: les minuteurs)."""
+        needle = prefix.strip().lower()
+        if not needle:
+            return 0
+
+        with self._lock:
+            items = self._read_items()
+            kept = [
+                item
+                for item in items
+                if item.get("triggered", False) or not str(item.get("label", "")).lower().startswith(needle)
+            ]
+            deleted_count = len(items) - len(kept)
+            if deleted_count:
+                self._write_items(kept)
+
+        return deleted_count
+
     def delete_all_alarms(self, include_triggered: bool = True) -> int:
         """Supprime toutes les alarmes, ou seulement les non déclenchées."""
         with self._lock:

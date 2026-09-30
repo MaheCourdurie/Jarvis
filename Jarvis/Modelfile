@@ -1,16 +1,21 @@
-# Modelfile — Jarvis (à remplir après export GGUF)
-# Usage : ollama create jarvis -f Modelfile
-
-# Remplace ce chemin par ton fichier GGUF exporté
+# Modelfile — Jarvis
+# Usage : ./run_jarvis.sh create
+#
+# Deux possibilités, choisies automatiquement par ./run_jarvis.sh create :
+# - le GGUF fine-tuné ci-dessous existe (parcours « entraînement ») : il est utilisé ;
+# - sinon, le modèle de base JARVIS_BASE_MODEL (gemma4:e4b par défaut) est téléchargé
+#   depuis la bibliothèque Ollama et habillé du prompt système de Jarvis.
 FROM ./export/jarvis-q4.gguf
 
 # Le prompt SYSTEM est injecté depuis ./system_prompt.txt par ./run_jarvis.sh create
 # (fichier généré: Jarvis/.Modelfile.generated)
 
-# Température basse = réponses plus déterministes (bien pour les actions)
-PARAMETER temperature 0.3
+# Les actions sont exécutées par le code, pas par le modèle : il ne sert qu'à converser,
+# d'où une température un peu plus haute pour laisser place à l'esprit du personnage.
+PARAMETER temperature 0.6
 PARAMETER top_p 0.9
 PARAMETER repeat_penalty 1.1
 PARAMETER num_ctx 4096
+# Jetons d'arrêt du modèle fine-tuné (ignorés quand un modèle de base est utilisé)
 PARAMETER stop "<|im_end|>"
 PARAMETER stop "<|eot_id|>"

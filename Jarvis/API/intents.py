@@ -1,25 +1,46 @@
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from datetime import datetime, timedelta
 
+from config import CONTACTS_FILE
+from persona import TITLE, fold as _fold, smalltalk_reply, strip_vocative
 
-COMMAND_HELP = """Commandes disponibles:
-/help
+
+COMMAND_HELP = """Commandes disponibles :
+
+Messagerie
 /mailresume
 /maillast
 /sendmail \"destinataire@domaine.com\" \"Objet\" \"Message\"
+
+Agenda
 /eventsweek
 /availability
 /addevent \"Titre\" \"YYYY-MM-DD HH:MM\" \"YYYY-MM-DD HH:MM\"
 /deleteevent \"id\"
 /deleteeventsrange \"YYYY-MM-DD\" \"YYYY-MM-DD\"
+
+Alarmes
 /setalarm \"YYYY-MM-DD HH:MM\" \"Titre\"
 /alarms
 /deletealarm \"id\"
 /deletealarmsrange \"YYYY-MM-DD\" \"YYYY-MM-DD\"
 /deletealarmsall
+
+Poste et informations
+/briefing
+/status
+/weather \"Ville\"
+/time
+/open \"Application\"
+/close \"Application\"
+/volume 40 (ou up, down, mute, unmute)
+/search \"requête\"
+/sleep
+/help
 """
 
 EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -32,6 +53,98 @@ WEEKDAY_INDEX = {
     "samedi": 5,
     "dimanche": 6,
 }
+NUMBER_WORDS = {
+    "un": 1,
+    "une": 1,
+    "deux": 2,
+    "trois": 3,
+    "quatre": 4,
+    "cinq": 5,
+    "six": 6,
+    "sept": 7,
+    "huit": 8,
+    "neuf": 9,
+    "dix": 10,
+    "quinze": 15,
+    "vingt": 20,
+    "trente": 30,
+    "quarante-cinq": 45,
+}
+
+
+def load_contacts() -> dict[str, str]:
+    """Charge le carnet d'adresses (nom → email) utilisé pour dicter un destinataire."""
+    try:
+        data = json.loads(CONTACTS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(name).strip(): str(email).strip() for name, email in data.items() if "@" in str(email)}
+
+
+def _find_contact(text: str) -> tuple[str, str] | None:
+    """Retrouve un contact cité dans la phrase (« envoie un mail à Paul »)."""
+    folded = _fold(text)
+    best: tuple[str, str] | None = None
+    for name, email in load_contacts().items():
+        key = re.escape(_fold(name))
+        if re.search(rf"\b(?:a|au|pour|avec)\s+{key}\b", folded):
+            # Le nom le plus long l'emporte (« Paul Martin » avant « Paul »).
+            if best is None or len(name) > len(best[0]):
+                best = (name, email)
+    return best
+
+
+def _normalize_spoken_email(text: str) -> str:
+    """Recolle une adresse dictée (« paul arobase exemple point com »)."""
+    if "arobase" not in text.lower():
+        return text
+    normalized = re.sub(r"\s*\barobase\b\s*", "@", text, flags=re.IGNORECASE)
+    return re.sub(r"(@[\w-]+(?:\.[\w-]+)*)\s+point\s+([a-z]{2,6})\b", r"\1.\2", normalized, flags=re.IGNORECASE)
+
+
+def _normalize_spoken_time(text: str) -> str:
+    """Ramène les heures dictées à la forme 7h30 (« 7 heures et demie », « midi », « 20 heures »)."""
+    normalized = text.replace("’", "'")
+
+    def quarter_to(match: re.Match) -> str:
+        return f"{(int(match.group(1)) - 1) % 24}h45"
+
+    normalized = re.sub(r"\b(\d{1,2})\s*(?:h|heures?)\s+moins\s+le\s+quart\b", quarter_to, normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(\d{1,2})\s*(?:h|heures?)\s+et\s+demie?\b", r"\1h30", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(\d{1,2})\s*(?:h|heures?)\s+et\s+quart\b", r"\1h15", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(\d{1,2})\s*heures?\s*(\d{1,2})\b", lambda m: f"{m.group(1)}h{int(m.group(2)):02d}", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(\d{1,2})\s*heures?\b", r"\1h", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"(?<![\w-])midi\b", "12h", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bminuit\b", "0h", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def _extract_relative_delay(text: str) -> timedelta | None:
+    """Extrait une durée (« 10 minutes », « une demi-heure », « 1h30 », « 45 secondes »)."""
+    folded = _fold(text)
+    for word, value in NUMBER_WORDS.items():
+        folded = re.sub(rf"\b{word}\s+(?=minutes?\b|heures?\b|secondes?\b)", f"{value} ", folded)
+
+    if re.search(r"\bdemi[- ]heure\b", folded):
+        return timedelta(minutes=30)
+    if re.search(r"\bquart d'heure\b", folded):
+        match = re.search(r"\b(\d+)\s+quarts? d'heure", folded)
+        return timedelta(minutes=15 * (int(match.group(1)) if match else 1))
+
+    match = re.search(r"\b(\d+)\s*(?:h|heures?)\s*(\d{1,2})?\b(?!\s*\d)", folded)
+    if match:
+        return timedelta(hours=int(match.group(1)), minutes=int(match.group(2) or 0))
+    match = re.search(r"\b(\d+)\s*(?:minutes?|min|mn)\b", folded)
+    if match:
+        delay = timedelta(minutes=int(match.group(1)))
+        seconds = re.search(r"\b(\d+)\s*(?:secondes?|sec)\b", folded)
+        return delay + timedelta(seconds=int(seconds.group(1))) if seconds else delay
+    match = re.search(r"\b(\d+)\s*(?:secondes?|sec)\b", folded)
+    if match:
+        return timedelta(seconds=int(match.group(1)))
+    return None
 
 
 def _extract_email(value: str) -> str | None:
@@ -68,9 +181,19 @@ def _extract_time_of_day(text: str) -> tuple[int, int] | None:
     return None
 
 
+def _apply_day_period(hour: int, lowered: str) -> int:
+    """Passe en heure de l'après-midi/du soir quand la phrase le précise (« 8h ce soir » → 20h)."""
+    if 1 <= hour <= 11 and re.search(r"\bsoir\b", lowered):
+        return hour + 12
+    if 1 <= hour <= 6 and re.search(r"\bapr[eè]s-midi\b", lowered):
+        return hour + 12
+    return hour
+
+
 def _parse_datetime_expression(text: str) -> datetime | None:
     """Interprète une date/heure naturelle en français (demain, lundi, dans 2h...)."""
     now = datetime.now()
+    text = _normalize_spoken_time(text)
 
     # Formats absolus ISO: YYYY-MM-DD HH:MM
     m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{1,2})(?::(\d{2}))?", text)
@@ -122,22 +245,28 @@ def _parse_datetime_expression(text: str) -> datetime | None:
         base = now + timedelta(days=delta)
         return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    # Relatif: "dans 45 minutes", "dans 2 heures"
-    m = re.search(r"dans\s+(\d+)\s*(minute|min|minutes)\b", lowered)
+    # Relatif: "dans 45 minutes", "dans 2 heures", "dans une demi-heure"
+    m = re.search(r"\bdans\s+(.{1,40})", lowered)
     if m:
-        return now + timedelta(minutes=int(m.group(1)))
-
-    m = re.search(r"dans\s+(\d+)\s*(heure|heures|h)\b", lowered)
-    if m:
-        return now + timedelta(hours=int(m.group(1)))
+        delay = _extract_relative_delay(m.group(1))
+        if delay is not None:
+            return now + delay
 
     # Aujourd'hui / demain (mots-clés avec heure placée avant ou après)
-    has_today = re.search(r"\b(?:aujourd'hui|aujourdhui|ajd)\b", lowered) is not None
+    has_today = re.search(r"\b(?:aujourd'hui|aujourdhui|ajd|ce soir|ce matin|cet apr[eè]s-midi)\b", lowered) is not None
     has_tomorrow = re.search(r"\bdemain\b", lowered) is not None
     if has_today or has_tomorrow:
         extracted = _extract_time_of_day(lowered)
+        if extracted is None:
+            # "demain matin", "ce soir" : pas d'heure précise, on prend celle du moment de la journée.
+            if re.search(r"\bmatin\b", lowered):
+                extracted = (9, 0)
+            elif re.search(r"\bapr[eè]s-midi\b", lowered):
+                extracted = (14, 0)
+            elif re.search(r"\bsoir\b", lowered):
+                extracted = (19, 0)
         if extracted is not None:
-            hour, minute = extracted
+            hour, minute = _apply_day_period(extracted[0], lowered), extracted[1]
             if has_today:
                 # Quand l'utilisateur dit explicitement "aujourd'hui", on respecte le jour demandé.
                 base = now
@@ -148,7 +277,7 @@ def _parse_datetime_expression(text: str) -> datetime | None:
     # Heure avec préposition: "a 15h", "pour 16:30", "vers 9h"
     m = re.search(r"\b(?:a|pour|vers)\s*(\d{1,2})(?:(?:[:h])(\d{2}))?\b", lowered)
     if m:
-        hour = int(m.group(1))
+        hour = _apply_day_period(int(m.group(1)), lowered)
         minute = int(m.group(2) or "0")
         if 0 <= hour <= 23 and 0 <= minute <= 59:
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -159,7 +288,7 @@ def _parse_datetime_expression(text: str) -> datetime | None:
     # Heure seule: "16h40", "16:30" -> aujourd'hui ou demain si déjà passé
     extracted = _extract_time_of_day(lowered)
     if extracted is not None:
-        hour, minute = extracted
+        hour, minute = _apply_day_period(extracted[0], lowered), extracted[1]
         target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if target < now:
             target += timedelta(days=1)
@@ -279,7 +408,39 @@ def _clean_fragment(value: str) -> str:
     return value.strip().strip("\"'` ").strip(" .,;:!?\t\n\r")
 
 
-def _extract_alarm_title(text: str, lowered: str) -> str:
+_TIME_FRAGMENTS = [
+    re.compile(
+        r"\bdans\s+(?:\d+|une?|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|quinze|vingt|trente)\s*"
+        r"(?:minutes?|min|mn|heures?|h|secondes?|sec)\b(?:\s*\d{1,2}\b)?",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(r"\bdans\s+(?:une?\s+)?(?:demi[- ]heure|quart d'heure)\b", flags=re.IGNORECASE),
+    re.compile(r"(?:\b(?:a|vers|pour)|à)\s*\d{1,2}\s*(?:h|:)\s*\d{0,2}\b", flags=re.IGNORECASE),
+    re.compile(r"\b\d{1,2}\s*h\s*\d{0,2}\b", flags=re.IGNORECASE),
+    re.compile(
+        r"\b(?:demain|aujourd'hui|aujourdhui|ce soir|ce matin|cet apr[eè]s-midi)\b(?:\s+(?:matin|soir|apr[eè]s-midi))?",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b(?:\s+prochaine?)?(?:\s+(?:matin|soir|apr[eè]s-midi))?",
+        flags=re.IGNORECASE,
+    ),
+]
+
+
+def _strip_time_expressions(text: str) -> str:
+    """Retire les indications de date et d'heure d'une phrase pour n'en garder que le sujet."""
+    cleaned = _normalize_spoken_time(text)
+    for pattern in _TIME_FRAGMENTS:
+        cleaned = pattern.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" ,.;:!?-")
+
+
+def _capitalize(value: str) -> str:
+    return value[:1].upper() + value[1:] if value else value
+
+
+def _extract_alarm_title(text: str, default: str = "Alarme") -> str:
     """Extrait un titre d'alarme depuis une phrase naturelle.
 
     Exemples pris en charge:
@@ -293,15 +454,12 @@ def _extract_alarm_title(text: str, lowered: str) -> str:
         if title:
             return title
 
-    # On prend le segment après le dernier "pour"
+    # On prend le segment après le dernier "pour", débarrassé des indications d'heure.
     split_matches = re.split(r"\bpour\b", text, flags=re.IGNORECASE)
     if len(split_matches) >= 2:
-        candidate = _clean_fragment(split_matches[-1])
-        candidate_lower = candidate.lower()
-        # Ignore les fragments temporels et garde les vrais labels
-        temporal_tokens = ["dans", "minute", "minutes", "min", "heure", "heures", "demain", "aujourd"]
-        if candidate and not any(tok in candidate_lower for tok in temporal_tokens):
-            return candidate
+        candidate = _clean_fragment(_strip_time_expressions(split_matches[-1]))
+        if len(candidate) >= 2:
+            return _capitalize(candidate)
 
     named_match = re.search(r"\b(?:nomm[ée]e?|appel[ée]e?|intitul[ée]e?)\b\s+(.+)$", text, flags=re.IGNORECASE)
     if named_match:
@@ -309,7 +467,7 @@ def _extract_alarm_title(text: str, lowered: str) -> str:
         if candidate:
             return candidate
 
-    return "Alarme Jarvis"
+    return default
 
 
 def _extract_mail_subject(text: str, quoted_parts: list[str]) -> str:
@@ -362,6 +520,8 @@ def _extract_mail_body(text: str) -> tuple[str, bool]:
             r"pour\s+lui\s+dire\s+(?:que|qu['’])\s*(.+)$",
             r"(?:et|puis)\s+lui\s+dire\s+(?:que|qu['’])\s*(.+)$",
             r"(?:et|puis)\s+lui\s+dire\s+(.+)$",
+            r"pour\s+(?:lui\s+)?(?:dire|annoncer|pr[ée]venir|signaler|confirmer)\s+(?:que|qu['’])\s*(.+)$",
+            r"pour\s+lui\s+(?:dire|demander|proposer|rappeler)\s+(.+)$",
         ]
         for pattern in natural_patterns:
             match = re.search(pattern, normalized, flags=re.IGNORECASE)
@@ -419,44 +579,42 @@ def _is_mail_followup_payload(text: str) -> bool:
 
 def _parse_natural_send_mail(text: str, fallback_email: str | None = None) -> dict | None:
     """Interprète une demande naturelle d'envoi d'email et renvoie l'action associée."""
+    text = _normalize_spoken_email(text)
     lowered = text.lower().replace("’", "'")
-    has_mail_term = any(token in lowered for token in ["mail", "email", "e-mail", "courrier", "message"])
+    has_mail_term = re.search(r"\b(?:mails?|emails?|e-mails?|courriers?|courriels?|messages?)\b", lowered) is not None
     references_previous_mail = _references_previous_mail(text)
     has_followup_payload = bool(fallback_email) and _is_mail_followup_payload(text)
-    has_send_term = any(
-        token in lowered
-        for token in [
-            "envoie",
-            "envoye",
-            "envoi",
-            "envoyer",
-            "send",
-            "expedie",
-            "expédie",
-            "écris",
-            "ecris",
-            "rédige",
-            "redige",
-            "écrit",
-        ]
-    )
+    # Verbes d'envoi explicites, par opposition aux verbes de rédaction (« écris-moi un poème »).
+    has_dispatch_verb = re.search(r"\b(?:envoie|envoye|envoi|envoyer|envoyez|send|exp[ée]die)\b", lowered) is not None
+    has_writing_verb = re.search(r"\b(?:[ée]cris|[ée]crit|[ée]crire|r[ée]dige|r[ée]diger)\b", lowered) is not None
 
-    if not has_send_term and not has_followup_payload:
+    if not (has_dispatch_verb or has_writing_verb) and not has_followup_payload:
         return None
+
     explicit_email = _extract_email(text)
-    if not has_mail_term and explicit_email is None and not references_previous_mail and not has_followup_payload:
+    contact = None if explicit_email else _find_contact(text)
+    has_recipient = explicit_email is not None or contact is not None
+    if not has_mail_term and not has_recipient and not references_previous_mail and not has_followup_payload:
         return None
 
-    to_email = explicit_email
+    to_email = explicit_email or (contact[1] if contact else None)
+    to_name = contact[0] if contact else None
     if not to_email and (references_previous_mail or has_followup_payload):
         to_email = fallback_email
 
     if not to_email:
+        # « Rédige un message d'anniversaire » : pas un envoi, le modèle s'en charge.
+        if not has_dispatch_verb:
+            return None
         return {
             "action": "command_error",
-            "message": "Je n'ai pas trouvé d'adresse email. Exemple: envoie un mail à client@exemple.com sujet Devis message Bonjour.",
+            "message": (
+                f"Il me faut l'adresse du destinataire, {TITLE}. Dites par exemple : "
+                "envoie un mail à client@exemple.com pour lui dire que le devis est prêt."
+            ),
         }
 
+    recipient = to_name or to_email
     quoted_parts = re.findall(r'"([^\"]+)"', text)
     subject = _extract_mail_subject(text, quoted_parts)
     body, explicit_body = _extract_mail_body(text)
@@ -466,18 +624,13 @@ def _parse_natural_send_mail(text: str, fallback_email: str | None = None) -> di
             return {
                 "action": "command_error",
                 "message": (
-                    f"Je peux envoyer le mail à {to_email} avec l'objet '{subject}', "
-                    "mais il me manque le message à transmettre. "
-                    "Exemple: message Bonjour, je te confirme le rendez-vous de demain."
+                    f"Je peux écrire à {recipient} avec l'objet « {subject} », {TITLE}, "
+                    "mais il me manque le message. Que dois-je lui dire ?"
                 ),
             }
         return {
             "action": "command_error",
-            "message": (
-                f"Je peux envoyer un mail à {to_email}, mais il me manque l'objet et le message. "
-                "Dis-moi quoi envoyer, par exemple: "
-                "envoie un mail à client@exemple.com sujet Devis message Bonjour, je vous envoie le devis."
-            ),
+            "message": f"Je peux écrire à {recipient}, {TITLE}. Que dois-je lui dire ?",
         }
 
     auto_subject = not bool(subject)
@@ -488,41 +641,104 @@ def _parse_natural_send_mail(text: str, fallback_email: str | None = None) -> di
         "action": "send_mail",
         "params": {
             "to_email": to_email,
+            "to_name": to_name,
             "subject": subject,
             "body": body,
             "auto_subject": auto_subject,
             "auto_draft": auto_draft,
             "auto_polish": auto_polish,
             "draft_context": text,
+            # Demande formulée en langage naturel : Jarvis montre le message avant de l'envoyer.
+            "confirm": True,
+        },
+    }
+
+
+def _parse_natural_timer(text: str) -> dict | None:
+    """Interprète une demande de minuteur (« minuteur de 10 minutes »)."""
+    folded = _fold(text)
+    if not re.search(r"\b(?:minuteurs?|compte a rebours|chronometre|chrono|timer)\b", folded):
+        return None
+
+    if re.search(r"\b(?:supprime|annule|arrete|stoppe|coupe)\b", folded):
+        return {"action": "delete_timers"}
+
+    delay = _extract_relative_delay(text)
+    if delay is None:
+        return {
+            "action": "command_error",
+            "message": f"Pour quelle durée, {TITLE} ? Par exemple : minuteur de 10 minutes.",
+        }
+
+    label = ""
+    label_match = re.search(r"\bpour\s+(.+)$", text, flags=re.IGNORECASE)
+    if label_match:
+        label = _clean_fragment(_strip_time_expressions(label_match.group(1)))
+        label = re.sub(r"^\d+\s*(?:minutes?|min|mn|heures?|h|secondes?|sec)\b\s*", "", label, flags=re.IGNORECASE)
+    title = f"Minuteur : {label}" if len(label) >= 2 else "Minuteur"
+
+    return {
+        "action": "set_alarm",
+        "params": {"when": (datetime.now() + delay).isoformat(), "title": title, "kind": "timer"},
+    }
+
+
+def _parse_natural_reminder(text: str) -> dict | None:
+    """Interprète un rappel (« rappelle-moi dans 20 minutes de sortir le gâteau »)."""
+    lead = re.search(
+        r"\b(?:rappelle|rappelez)[- ]moi\b|\bfai(?:s|tes)[- ]moi penser\b|\bpense à me rappeler\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not lead:
+        return None
+
+    when = _parse_datetime_expression(text)
+    if when is None:
+        return {
+            "action": "command_error",
+            "message": (
+                f"Quand dois-je vous le rappeler, {TITLE} ? "
+                "Par exemple : rappelle-moi dans 20 minutes de sortir le gâteau."
+            ),
+        }
+
+    subject = _strip_time_expressions(text[: lead.start()] + " " + text[lead.end():])
+    subject = re.sub(r"^(?:de|d'|que|qu'|à|a)\s*", "", subject.replace("’", "'"), flags=re.IGNORECASE)
+    subject = _clean_fragment(subject)
+
+    return {
+        "action": "set_alarm",
+        "params": {
+            "when": when.isoformat(),
+            "title": _capitalize(subject) if len(subject) >= 2 else "Rappel",
+            "kind": "reminder",
         },
     }
 
 
 def _parse_natural_alarm(text: str) -> dict | None:
     """Interprète une demande naturelle liée aux alarmes (création/liste/suppression)."""
-    lowered = text.lower()
+    folded = _fold(text)
+    has_alarm_term = re.search(r"\b(?:alarmes?|reveils?)\b", folded) is not None
+    wake_me = re.search(r"\breveille[sz]?[- ]moi\b", folded) is not None
+    if not has_alarm_term and not wake_me:
+        return None
 
-    if ("alarme" in lowered or "reveil" in lowered or "réveil" in lowered) and any(
-        token in lowered for token in ["liste", "montre", "affiche", "quelles"]
-    ):
+    is_delete = re.search(r"\b(?:supprime|annule|efface|retire|enleve)\b", folded) is not None
+    is_create = wake_me or re.search(r"\b(?:mets|met|ajoute|programme|cree|regle|lance)\b", folded) is not None
+
+    if not is_delete and not is_create and re.search(r"\b(?:liste|montre|affiche|quelles?|mes|ai-je|combien)\b", folded):
         return {"action": "list_alarms"}
 
-    if ("supprime" in lowered or "annule" in lowered) and (
-        "alarme" in lowered or "reveil" in lowered or "réveil" in lowered
-    ):
-        alarm_id_match = re.search(r"\b([a-f0-9]{4,8})\b", lowered)
-        if alarm_id_match:
-            return {
-                "action": "delete_alarm",
-                "params": {"alarm_id": alarm_id_match.group(1)},
-            }
-
+    if is_delete:
         day_period = _extract_day_period_bounds(text)
-        has_all_token = any(token in lowered for token in ["tout", "tous", "toutes"])
-        has_plural_alarm = any(token in lowered for token in ["alarmes", "reveils", "réveils"])
+        has_all_token = re.search(r"\b(?:tout|tous|toutes)\b", folded) is not None
+        has_plural_alarm = re.search(r"\b(?:alarmes|reveils)\b", folded) is not None
 
         if has_all_token and has_plural_alarm and day_period is None:
-            return {"action": "delete_alarms_all"}
+            # Suppression en masse demandée en langage naturel : Jarvis demande confirmation.
+            return {"action": "delete_alarms_all", "params": {"confirm": True}}
 
         if day_period is not None:
             start, end = day_period
@@ -534,41 +750,91 @@ def _parse_natural_alarm(text: str) -> dict | None:
                 },
             }
 
+        # Identifiant hexadécimal court (au moins un chiffre, pour ne pas le confondre avec un mot).
+        alarm_id_match = re.search(r"\b(?=[a-f0-9]*\d)[a-f0-9]{4,8}\b", folded)
+        if alarm_id_match:
+            return {
+                "action": "delete_alarm",
+                "params": {"alarm_id": alarm_id_match.group(0)},
+            }
+
         return {
             "action": "command_error",
             "message": (
-                "Précise l'identifiant, la journée ou la période des alarmes à supprimer. "
-                "Exemples: supprime l'alarme abcd1234, supprime les alarmes de demain, "
+                f"Laquelle, {TITLE} ? Précisez l'identifiant, la journée ou la période. "
+                "Par exemple : supprime l'alarme abcd1234, supprime les alarmes de demain, "
                 "supprime toutes mes alarmes."
             ),
         }
 
-    if not any(token in lowered for token in ["alarme", "réveil", "reveil"]):
-        return None
-    if not any(token in lowered for token in ["mets", "met", "ajoute", "programme", "cree", "crée", "regle", "règle", "réveille", "reveille"]):
+    if not is_create:
         return None
 
     when = _parse_datetime_expression(text)
     if when is None:
         return {
             "action": "command_error",
-            "message": "Je n'ai pas trouvé la date/heure de l'alarme. Exemple: mets une alarme demain à 07:30",
+            "message": f"Pour quelle heure, {TITLE} ? Par exemple : mets une alarme demain à 7 h 30.",
         }
 
-    title = _extract_alarm_title(text, lowered)
+    default_title = "Réveil" if wake_me or re.search(r"\breveils?\b", folded) else "Alarme"
 
     return {
         "action": "set_alarm",
         "params": {
             "when": when.isoformat(),
-            "title": title,
+            "title": _extract_alarm_title(text, default=default_title),
+            "kind": "alarm",
         },
     }
 
 
+EVENT_LABELS = {
+    "reunion": "Réunion",
+    "rdv": "Rendez-vous",
+    "rendez-vous": "Rendez-vous",
+    "meeting": "Meeting",
+    "dejeuner": "Déjeuner",
+    "diner": "Dîner",
+    "appel": "Appel",
+    "call": "Call",
+    "visio": "Visio",
+    "entretien": "Entretien",
+    "seance": "Séance",
+}
+_EVENT_NOUN = re.compile(r"\b(" + "|".join(re.escape(key) for key in EVENT_LABELS) + r")\b")
+
+
+def _event_title(text: str, folded: str) -> str:
+    """Déduit le titre d'un événement : guillemets, « pour … », puis « <type> avec <personne> »."""
+    quoted = re.findall(r'"([^\"]+)"', text)
+    if quoted and quoted[-1].strip():
+        return quoted[-1].strip()
+
+    noun = _EVENT_NOUN.search(folded)
+    base = EVENT_LABELS[noun.group(1)] if noun else ""
+
+    subject_match = re.search(r"\b(?:pour|concernant|au sujet de)\b\s+(.+)$", text, flags=re.IGNORECASE)
+    if subject_match:
+        subject = _clean_fragment(_strip_time_expressions(subject_match.group(1)))
+        if len(subject) >= 2:
+            return _capitalize(subject)
+
+    with_match = re.search(r"\bavec\s+(.+)$", text, flags=re.IGNORECASE)
+    if with_match:
+        person = _clean_fragment(_strip_time_expressions(with_match.group(1)))
+        person = re.split(r"\s+(?:de|du|pour|pendant|durant)\s+\d", person)[0].strip()
+        if len(person) >= 2:
+            return f"{base or 'Rendez-vous'} avec {person}"
+
+    return base or "Événement"
+
+
 def _parse_natural_calendar(text: str) -> dict | None:
     """Interprète une demande naturelle liée au calendrier (création/liste/suppression)."""
+    text = _normalize_spoken_time(text)
     lowered = text.lower()
+    folded = _fold(text)
 
     delete_verbs = ["supprime", "annule", "efface", "retire"]
     event_terms = [
@@ -584,16 +850,13 @@ def _parse_natural_calendar(text: str) -> dict | None:
         "créneau",
         "bloc",
     ]
+    has_event_noun = _EVENT_NOUN.search(folded) is not None
 
-    if any(token in lowered for token in delete_verbs) and any(token in lowered for token in event_terms):
+    if any(token in lowered for token in delete_verbs) and (any(token in lowered for token in event_terms) or has_event_noun):
         quoted = re.findall(r'"([^\"]+)"', text)
         event_id = quoted[0].strip() if quoted else ""
         if not event_id:
-            id_match = re.search(
-                r"\b(?:id|event|evenement|événement)\b\s*[:=]?\s*([A-Za-z0-9_@.\-]{4,})\b",
-                text,
-                flags=re.IGNORECASE,
-            )
+            id_match = re.search(r"\bid\b\s*[:=]?\s*([A-Za-z0-9_@.\-]{4,})\b", text, flags=re.IGNORECASE)
             if id_match:
                 event_id = id_match.group(1).strip()
 
@@ -611,22 +874,24 @@ def _parse_natural_calendar(text: str) -> dict | None:
                 "params": {
                     "start": start.isoformat(),
                     "end": end.isoformat(),
+                    # Suppression en masse demandée en langage naturel : Jarvis demande confirmation.
+                    "confirm": True,
                 },
             }
 
         return {
             "action": "command_error",
             "message": (
-                "Je n'ai pas trouvé l'id, la journée ou la période des événements à supprimer. "
-                "Exemples: /deleteevent \"id\", supprime les événements de demain, "
-                "supprime les événements du 2026-04-10 au 2026-04-12."
+                f"Lequel, {TITLE} ? Précisez l'identifiant, la journée ou la période. "
+                "Par exemple : supprime les événements de demain, "
+                "ou supprime les événements du 2026-04-10 au 2026-04-12."
             ),
         }
 
-    create_verbs = ["cree", "crée", "ajoute", "programme", "planifie", "planifier", "bloque", "bloquer"]
+    create_verbs = ["cree", "crée", "ajoute", "programme", "planifie", "planifier", "bloque", "bloquer", "organise", "cale"]
 
-    has_create = any(token in lowered for token in create_verbs)
-    has_event_term = any(token in lowered for token in event_terms)
+    has_create = any(re.search(rf"\b{verb}\b", lowered) for verb in create_verbs)
+    has_event_term = any(token in lowered for token in event_terms) or has_event_noun
     has_block_verb = any(token in lowered for token in ["bloque", "bloquer"])
 
     if has_create and (has_event_term or has_block_verb):
@@ -634,16 +899,17 @@ def _parse_natural_calendar(text: str) -> dict | None:
         if start is None:
             return {
                 "action": "command_error",
-                "message": "Je n'ai pas trouvé la date/heure de l'événement. Exemple: crée un événement lundi prochain à 10h.",
+                "message": f"Pour quand, {TITLE} ? Par exemple : crée un événement lundi prochain à 10 h.",
             }
 
         end = None
 
         m = re.search(
-            r"\bde\s*(\d{1,2})(?:(?:[:h])(\d{2}))?\s*(?:a|à|-|jusqu(?:'|’)a)\s*(\d{1,2})(?:(?:[:h])(\d{2}))?\b",
+            r"\bde\s*(\d{1,2})\s*(?:h|:)?\s*(\d{2})?\s*(?:a|à|-|jusqu(?:'|’)a)\s*(\d{1,2})\s*(?:h|:)?\s*(\d{2})?\b",
             lowered,
         )
         if m:
+            start = start.replace(hour=int(m.group(1)), minute=int(m.group(2) or "0"), second=0, microsecond=0)
             end_hour = int(m.group(3))
             end_min = int(m.group(4) or "0")
             end = start.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
@@ -658,25 +924,10 @@ def _parse_natural_calendar(text: str) -> dict | None:
         if end is None:
             end = start + timedelta(hours=1)
 
-        quoted = re.findall(r'"([^\"]+)"', text)
-        title = quoted[-1].strip() if quoted else ""
-
-        if not title:
-            m = re.search(r"\b(?:pour|concernant)\b\s+(.+)$", text, flags=re.IGNORECASE)
-            if m:
-                title = m.group(1).strip(" .;,")
-
-        if not title and any(token in lowered for token in ["reunion", "réunion"]):
-            title = "Réunion"
-        if not title and any(token in lowered for token in ["rdv", "rendez"]):
-            title = "Rendez-vous"
-        if not title:
-            title = "Événement Jarvis"
-
         return {
             "action": "add_event",
             "params": {
-                "title": title,
+                "title": _event_title(text, folded),
                 "start": start.isoformat(),
                 "end": end.isoformat(),
             },
@@ -718,6 +969,17 @@ def _parse_natural_calendar(text: str) -> dict | None:
 
         if any(token in lowered for token in ["quel", "quels", "quoi", "liste", "montre", "affiche"]):
             return {"action": "events_week"}
+
+    # « Qu'est-ce que j'ai de prévu demain ? », « j'ai quoi aujourd'hui ? »
+    if re.search(r"\bde prevu\b|\bau programme\b|\bj'ai quoi\b|\bqu'est-ce que j'ai\b|\bqu'ai-je\b", folded):
+        if "semaine" in folded:
+            return {"action": "events_week"}
+        day_period = _extract_day_period_bounds(text)
+        if day_period is None:
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            day_period = (today, today + timedelta(days=1))
+        start, end = day_period
+        return {"action": "events_range", "params": {"start": start.isoformat(), "end": end.isoformat()}}
 
     return None
 
@@ -930,10 +1192,236 @@ def _parse_command(text: str) -> dict:
     if command in {"/deletealarmsall", "/deleteallalarms"}:
         return {"action": "delete_alarms_all"}
 
+    if command in {"/briefing", "/brief"}:
+        return {"action": "briefing"}
+
+    if command in {"/status", "/diagnostic", "/system"}:
+        return {"action": "system_status"}
+
+    if command == "/battery":
+        return {"action": "system_status", "params": {"focus": "battery"}}
+
+    if command in {"/weather", "/meteo"}:
+        return {"action": "weather", "params": {"city": " ".join(parts[1:]).strip() or None}}
+
+    if command == "/time":
+        return {"action": "time"}
+
+    if command == "/date":
+        return {"action": "date"}
+
+    if command in {"/open", "/close"}:
+        if len(parts) < 2:
+            return {"action": "command_error", "message": f"Format attendu:\n{command} \"Application\""}
+        target = " ".join(parts[1:]).strip()
+        if command == "/close":
+            return {"action": "quit_app", "params": {"name": target}}
+        if re.fullmatch(r"(?:https?://)?[\w-]+(?:\.[\w-]+)+(?:/\S*)?", target):
+            return {"action": "open_url", "params": {"url": target}}
+        return {"action": "open_app", "params": {"name": target}}
+
+    if command == "/volume":
+        if len(parts) < 2:
+            return {"action": "volume", "params": {"mode": "get"}}
+        value = parts[1].lower().rstrip("%")
+        if value.isdigit():
+            return {"action": "volume", "params": {"mode": "set", "level": int(value)}}
+        if value in {"up", "down", "mute", "unmute"}:
+            return {"action": "volume", "params": {"mode": value}}
+        return {"action": "command_error", "message": "Format attendu:\n/volume 40 (ou up, down, mute, unmute)"}
+
+    if command == "/search":
+        if len(parts) < 2:
+            return {"action": "command_error", "message": "Format attendu:\n/search \"requête\""}
+        return {"action": "web_search", "params": {"query": " ".join(parts[1:]).strip(), "engine": "web"}}
+
+    if command == "/sleep":
+        return {"action": "sleep_display"}
+
     return {
         "action": "command_error",
         "message": f"Commande inconnue: {command}\n\n{COMMAND_HELP}",
     }
+
+
+_NOT_A_CITY = {"demain", "aujourd'hui", "maintenant", "moment", "semaine", "matin", "soir", "midi", "jarvis"}
+
+
+def _extract_city(text: str) -> str | None:
+    """Repère une ville dans une demande météo (« à Lyon », « sur New York », « météo Bordeaux »)."""
+    match = re.search(
+        r"(?:\b(?:a|sur|pour|de)|à)\s+((?:[A-ZÀ-Ý][\wà-ÿ'’-]+)(?:[ -][A-ZÀ-Ý][\wà-ÿ'’-]+)*)",
+        text,
+    )
+    if match and _fold(match.group(1)) not in _NOT_A_CITY:
+        return match.group(1)
+
+    match = re.search(r"\bm[ée]t[ée]o\s+(?:(?:a|à|de|sur|pour)\s+)?([a-zà-ÿ][\wà-ÿ' -]{1,30})$", text.strip(" ?!."), flags=re.IGNORECASE)
+    if match:
+        candidate = re.sub(r"\b(?:de\s+)?(?:demain|aujourd'hui|maintenant)\b", "", match.group(1), flags=re.IGNORECASE).strip(" '-")
+        if len(candidate) >= 2 and _fold(candidate) not in _NOT_A_CITY and not _fold(candidate).startswith(("du ", "de ", "pour ")):
+            return candidate.title()
+    return None
+
+
+def _parse_info(text: str) -> dict | None:
+    """Interprète les demandes d'information : heure, date, météo, briefing."""
+    folded = _fold(text)
+
+    if re.search(
+        r"(?<!a )quelle heure (?:est[- ]il|il est|on a)\b|\bil est quelle heure\b|\b(?:donne|dis)[- ]moi l'heure\b"
+        r"|\b(?:tu as|t'as|vous avez|as[- ]tu|avez[- ]vous) l'heure\b|^l'heure\b",
+        folded,
+    ):
+        return {"action": "time"}
+
+    if re.search(
+        r"\bquel jour (?:sommes|est[- ]on|on est|est[- ]ce)|\bon est quel jour\b|\bquelle est la date\b"
+        r"|\bla date d'aujourd'hui\b|\bon est le combien\b|\bnous sommes le combien\b|\bquelle date\b",
+        folded,
+    ):
+        return {"action": "date"}
+
+    if re.search(
+        r"\bmeteo\b|\bquel temps (?:fait|fera|il fait|il fera)\b|\btemps qu'il (?:fait|fera)\b"
+        r"|\bil fait (?:combien|quelle temperature|beau|froid|chaud)\b|\btemperature (?:exterieure|dehors|qu'il fait)\b"
+        r"|\bva[- ]t[- ]il pleuvoir\b|\best[- ]ce qu'il (?:va pleuvoir|pleut|pleuvra)\b|\bil pleut\b"
+        r"|\bbesoin d'un parapluie\b|\bprevisions\b",
+        folded,
+    ):
+        return {
+            "action": "weather",
+            "params": {"city": _extract_city(text), "day": "tomorrow" if re.search(r"\bdemain\b", folded) else "today"},
+        }
+
+    if re.search(
+        r"\bbriefing\b|\bfai(?:s|tes)[- ](?:moi )?(?:le|un) point\b|\bpoint sur (?:la|ma) journee\b"
+        r"|\brapport du (?:jour|matin)\b|\bprogramme (?:du jour|de la journee)\b|\bresume de (?:la|ma) journee\b",
+        folded,
+    ):
+        return {"action": "briefing"}
+
+    return None
+
+
+def _parse_mail_reading(text: str) -> dict | None:
+    """Interprète les demandes de lecture de la messagerie."""
+    folded = _fold(text)
+    has_mail = re.search(r"\b(?:mails?|emails?|e-mails?|courriers?|courriels?|messagerie|boite (?:mail|de reception))\b", folded)
+    if not has_mail:
+        return None
+    # Supprimer, archiver ou répondre n'est pas lire : ces demandes ne sont pas prises en charge.
+    if re.search(r"\b(?:supprime|efface|archive|reponds|repondre|transfere|marque)\b", folded):
+        return None
+
+    if re.search(r"\b(?:dernier|derniere|latest|plus recent)\b", folded):
+        return {"action": "mail_last"}
+    if re.search(
+        r"\b(?:resume|lis|lire|consulte|verifie|regarde|check|montre|affiche|non lus?|nouveaux?|recu|releve)\b"
+        r"|\bai[- ]je\b|\best[- ]ce que j'ai\b|\bj'ai des\b|\bquoi de neuf\b",
+        folded,
+    ):
+        return {"action": "mail_resume"}
+    return None
+
+
+def _parse_system(text: str) -> dict | None:
+    """Interprète les demandes de pilotage du poste : diagnostic, volume, applications, web, veille."""
+    folded = _fold(text).strip(" .!?")
+    cleaned = text.strip().strip(".!?").strip()
+
+    # Diagnostic
+    if re.search(r"\bbatterie\b|\bautonomie\b", folded):
+        return {"action": "system_status", "params": {"focus": "battery"}}
+    if re.search(
+        r"\bdiagnostic\b|\b(?:etat|statut|status|rapport|bilan) (?:du|des|de tes|de vos|de mon|systeme)\s*(?:systemes?|mac|poste|pc|ordinateur|machine)?"
+        r"|\brapport d'etat\b|\btous les systemes\b|\b(?:utilisation|charge|usage) (?:du |de la )?(?:processeur|cpu|memoire|ram)\b"
+        r"|\bespace disque\b|\bmemoire (?:vive|utilisee|disponible)\b",
+        folded,
+    ):
+        return {"action": "system_status"}
+
+    # Volume
+    sound = r"(?:son|volume)"
+    level = re.search(rf"\b{sound}\s+(?:a|au|sur)\s+(\d{{1,3}})\b", folded)
+    if level:
+        return {"action": "volume", "params": {"mode": "set", "level": min(100, int(level.group(1)))}}
+    if re.search(rf"\b{sound}\s+(?:au maximum|au max|a fond)\b", folded):
+        return {"action": "volume", "params": {"mode": "set", "level": 100}}
+    if re.search(rf"\b(?:coupe|mute|desactive|eteins)\s+le\s+{sound}\b|\ben sourdine\b|\bmode muet\b", folded):
+        return {"action": "volume", "params": {"mode": "mute"}}
+    if re.search(rf"\b(?:remets|reactive|retablis|rallume|active)\s+le\s+{sound}\b", folded):
+        return {"action": "volume", "params": {"mode": "unmute"}}
+    if re.search(rf"\b(?:monte|augmente|hausse)\b.*\b{sound}\b|\bplus fort\b", folded):
+        return {"action": "volume", "params": {"mode": "up"}}
+    if re.search(rf"\b(?:baisse|diminue|reduis)\b.*\b{sound}\b|\bmoins fort\b", folded):
+        return {"action": "volume", "params": {"mode": "down"}}
+    if re.search(rf"\b(?:quel est le|a combien est le|niveau du|montre le)\s+{sound}\b", folded):
+        return {"action": "volume", "params": {"mode": "get"}}
+
+    # Veille de l'écran
+    if re.search(
+        r"\bverrouille[rz]?\s+(?:l'ecran|la session|le mac|l'ordinateur|le poste)\b"
+        r"|\b(?:mets|mettre|passe)\s+(?:l'ecran|le mac|l'ordinateur|le poste)\s+en veille\b|\beteins l'ecran\b",
+        folded,
+    ):
+        return {"action": "sleep_display"}
+
+    # Recherche web
+    search = re.match(
+        r"^(?:(?:fais|lance)(?:[- ]moi)?\s+une\s+recherche(?:\s+(?:web|internet|google))?\s+(?:sur|pour|de)\s+"
+        r"|(?:cherche|recherche|trouve|google)(?:[- ]moi)?\s+)(.+)$",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if search:
+        query = search.group(1).strip()
+        # Les recherches dans les données personnelles ne sont pas des recherches web.
+        if not re.search(r"\b(?:mails?|emails?|agenda|calendrier|evenements?|alarmes?|contacts?)\b", _fold(query)):
+            engine = "web"
+            engine_match = re.search(r"\s+(?:sur|dans)\s+(google|youtube|wikip[ée]dia|internet|le web|le net)$", query, flags=re.IGNORECASE)
+            if engine_match:
+                name = _fold(engine_match.group(1))
+                engine = name if name in {"google", "youtube", "wikipedia"} else "web"
+                query = query[: engine_match.start()].strip()
+            if query:
+                return {"action": "web_search", "params": {"query": query, "engine": engine}}
+
+    # Ouverture d'un site ou d'une application
+    opening = re.match(r"^(?:ouvre|ouvrir|ouvrez|lance|lancer|lancez|d[ée]marre|d[ée]marrer)(?:[- ]moi)?\s+(.+)$", cleaned, flags=re.IGNORECASE)
+    if opening:
+        target = opening.group(1).strip()
+        site = re.sub(r"^(?:le\s+site\s+(?:de\s+|d')?|la\s+page\s+(?:de\s+|d')?)", "", target, flags=re.IGNORECASE)
+        if re.fullmatch(r"(?:https?://)?[\w-]+(?:\.[\w-]+)+(?:/\S*)?", site):
+            return {"action": "open_url", "params": {"url": site}}
+        return {"action": "open_app", "params": {"name": target}}
+
+    closing = re.match(r"^(?:ferme|fermer|fermez|quitte|quitter|quittez)\s+(.+)$", cleaned, flags=re.IGNORECASE)
+    if closing:
+        return {"action": "quit_app", "params": {"name": closing.group(1).strip()}}
+
+    return None
+
+
+_YES = re.compile(
+    r"^(?:oui|ouais|yes|yep|affirmatif|absolument|exactement|tout a fait|bien sur|d'accord|ok|okay|c'est bon|parfait"
+    r"|vas[- ]y|allez[- ]y|fais[- ]le|faites[- ]le|envoie(?:[- ]le)?|envoyez(?:[- ]le)?|confirme|je confirme|confirmer"
+    r"|supprime(?:[- ]les)?|supprimez(?:[- ]les)?|tu peux|vous pouvez|s'il te plait|s'il vous plait)\b"
+)
+_NO = re.compile(
+    r"^(?:non|nan|no|negatif|surtout pas|pas maintenant|pas du tout|annule|annulez|laisse tomber|laissez tomber"
+    r"|oublie|oubliez|stop|attends|attendez|n'envoie|ne l'envoie|ne supprime)\b"
+)
+
+
+def classify_confirmation(text: str) -> str | None:
+    """Interprète la réponse à une demande de confirmation : "yes", "no" ou None."""
+    folded = _fold(strip_vocative(text)).strip(" .!?,")
+    if _NO.match(folded):
+        return "no"
+    if _YES.match(folded):
+        return "yes"
+    return None
 
 
 def detect_action(text: str, fallback_email: str | None = None) -> dict | None:
@@ -945,30 +1433,27 @@ def detect_action(text: str, fallback_email: str | None = None) -> dict | None:
     if stripped.startswith("/"):
         return _parse_command(stripped)
 
-    natural_mail = _parse_natural_send_mail(stripped, fallback_email=fallback_email)
-    if natural_mail is not None:
-        return natural_mail
+    # Petites phrases du quotidien (« Jarvis ? », « merci », « tu es là ? ») : réponse immédiate.
+    smalltalk = smalltalk_reply(stripped)
+    if smalltalk is not None:
+        return {"action": "smalltalk", "reply": smalltalk}
 
-    natural_alarm = _parse_natural_alarm(stripped)
-    if natural_alarm is not None:
-        return natural_alarm
+    # « Jarvis, ouvre Safari » → « ouvre Safari »
+    stripped = strip_vocative(stripped) or stripped
 
-    natural_calendar = _parse_natural_calendar(stripped)
-    if natural_calendar is not None:
-        return natural_calendar
-
-    lowered = stripped.lower()
-
-    if ("mail" in lowered or "email" in lowered) and ("résume" in lowered or "resume" in lowered):
-        return {"action": "mail_resume"}
-
-    if ("dernier" in lowered or "latest" in lowered) and ("mail" in lowered or "email" in lowered):
-        return {"action": "mail_last"}
-
-    if "disponib" in lowered and "semaine" in lowered:
-        return {"action": "availability_week"}
-
-    if ("planning" in lowered or "réunion" in lowered or "reunion" in lowered) and "semaine" in lowered:
-        return {"action": "events_week"}
+    parsers = (
+        lambda: _parse_natural_send_mail(stripped, fallback_email=fallback_email),
+        lambda: _parse_natural_timer(stripped),
+        lambda: _parse_natural_reminder(stripped),
+        lambda: _parse_natural_alarm(stripped),
+        lambda: _parse_natural_calendar(stripped),
+        lambda: _parse_mail_reading(stripped),
+        lambda: _parse_info(stripped),
+        lambda: _parse_system(stripped),
+    )
+    for parser in parsers:
+        action = parser()
+        if action is not None:
+            return action
 
     return None

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J.A.R.V.I.S.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./hud.css">
+</head>
+<body>
+
+<!-- Séquence de démarrage -->
+<div class="boot" id="boot">
+  <div class="boot-inner">
+    <div class="boot-reactor" aria-hidden="true">
+      <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span><span class="pulse"></span>
+    </div>
+    <h1 class="boot-title">J.A.R.V.I.S.</h1>
+    <p class="boot-tagline">Just A Rather Very Intelligent System</p>
+    <ul class="boot-lines" id="bootLines"></ul>
+    <button class="boot-btn" id="bootBtn" type="button" disabled>Connexion…</button>
+    <p class="boot-hint" id="bootHint">Recherche du noyau sur ce poste…</p>
+  </div>
+</div>
+
+<div class="hud" id="hud" aria-hidden="true">
+
+  <!-- Bandeau supérieur -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">J.A.R.V.I.S.</span>
+      <span class="brand-sub">Just A Rather Very Intelligent System</span>
+    </div>
+    <div class="toggles">
+      <button class="chip" id="micToggle" type="button" aria-pressed="false" title="Activer ou couper le micro">Micro</button>
+      <button class="chip" id="voiceToggle" type="button" aria-pressed="true" title="Activer ou couper la voix de Jarvis">Voix</button>
+      <button class="chip" id="continuousToggle" type="button" aria-pressed="false" title="Conversation continue : inutile de dire « Jarvis » avant chaque phrase">Continu</button>
+      <button class="chip" id="helpToggle" type="button" title="Commandes disponibles">Aide</button>
+      <button class="chip danger" id="clearBtn" type="button" title="Effacer la conversation">Effacer</button>
+    </div>
+  </header>
+
+  <!-- Colonne gauche : capteurs -->
+  <aside class="column left">
+    <section class="panel">
+      <h2 class="panel-title">Systèmes</h2>
+      <div class="gauge" id="gaugeCpu"><span class="gauge-label">Processeur</span><span class="gauge-value">—</span><div class="gauge-bar"><i></i></div></div>
+      <div class="gauge" id="gaugeMem"><span class="gauge-label">Mémoire</span><span class="gauge-value">—</span><div class="gauge-bar"><i></i></div></div>
+      <div class="gauge" id="gaugeDisk"><span class="gauge-label">Disque</span><span class="gauge-value">—</span><div class="gauge-bar"><i></i></div></div>
+      <div class="gauge" id="gaugeBattery"><span class="gauge-label">Énergie</span><span class="gauge-value">—</span><div class="gauge-bar"><i></i></div></div>
+      <p class="panel-note" id="systemNote">Capteurs en attente…</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Environnement</h2>
+      <div class="clock" id="clock">--:--:--</div>
+      <div class="date" id="date">—</div>
+      <div class="weather" id="weather">
+        <span class="weather-temp" id="weatherTemp">—</span>
+        <span class="weather-desc" id="weatherDesc">Météo en attente…</span>
+      </div>
+      <p class="panel-note" id="weatherNote"></p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Liaisons</h2>
+      <div class="link-row"><span>Modèle</span><span class="link-value" id="linkModel">—</span></div>
+      <div class="link-row"><span>Voix</span><span class="link-value" id="linkVoice">—</span></div>
+      <div class="link-row"><span>Écoute</span><span class="link-value" id="linkEars">—</span></div>
+      <div class="link-row"><span>Google</span><span class="link-value" id="linkGoogle">—</span></div>
+      <div class="link-actions">
+        <button class="btn" id="googleConnectBtn" type="button">Connecter</button>
+        <button class="btn danger" id="googleDisconnectBtn" type="button">Déconnecter</button>
+      </div>
+    </section>
+  </aside>
+
+  <!-- Centre : le réacteur et la conversation -->
+  <main class="center">
+    <div class="core-wrap" id="coreWrap" title="Cliquez pour parler à Jarvis">
+      <canvas id="core"></canvas>
+      <div class="core-label">
+        <span class="core-name">J.A.R.V.I.S.</span>
+        <span class="core-state" id="coreState">Hors ligne</span>
+      </div>
+    </div>
+    <div class="heard" id="heard" aria-live="polite"></div>
+
+    <div class="log" id="log" aria-live="polite"></div>
+
+    <form class="command" id="commandForm" autocomplete="off">
+      <span class="command-prompt">&gt;</span>
+      <input id="commandInput" type="text" placeholder="Parlez, ou écrivez un ordre…" aria-label="Ordre pour Jarvis">
+      <button class="btn" id="sendBtn" type="submit">Envoyer</button>
+    </form>
+    <p class="hints">Dites « Jarvis, … » · Espace : parler sans le prénom · Échap : le faire taire</p>
+  </main>
+
+  <!-- Colonne droite : la journée -->
+  <aside class="column right">
+    <section class="panel">
+      <h2 class="panel-title">Agenda du jour</h2>
+      <ul class="list" id="agendaList"><li class="muted">En attente…</li></ul>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Messagerie</h2>
+      <div class="big-number" id="mailCount">—</div>
+      <ul class="list" id="mailList"></ul>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Alarmes</h2>
+      <ul class="list" id="alarmList"><li class="muted">Aucune alarme</li></ul>
+    </section>
+  </aside>
+</div>
+
+<!-- Tiroir d'aide -->
+<div class="drawer" id="help" hidden>
+  <div class="drawer-panel">
+    <button class="drawer-close" id="helpClose" type="button" aria-label="Fermer">×</button>
+    <h2 class="panel-title">À vos ordres</h2>
+    <div class="examples">
+      <p>« Jarvis, quel temps fait-il ? »</p>
+      <p>« Jarvis, fais-moi le point »</p>
+      <p>« Jarvis, lance un diagnostic »</p>
+      <p>« Jarvis, ouvre Safari » · « monte le volume »</p>
+      <p>« Jarvis, minuteur de 10 minutes »</p>
+      <p>« Jarvis, rappelle-moi à 15 h d'appeler Paul »</p>
+      <p>« Jarvis, qu'est-ce que j'ai de prévu demain ? »</p>
+      <p>« Jarvis, envoie un mail à … pour lui dire que … »</p>
+    </div>
+    <pre class="commands" id="commandsHelp">Chargement…</pre>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script type="module" src="./hud.js"></script>
+</body>
+</html>

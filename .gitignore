@@ -1,0 +1,28 @@
+# Secrets et configuration locale
+.env
+*.env.local
+Jarvis/API/.google-token.json
+Jarvis/API/google-client-secret*.json
+Jarvis/API/client_secret*.json
+
+# Données locales générées par l'API
+Jarvis/API/.alarms.json
+Jarvis/API/voices/
+Jarvis/API/contacts.json
+
+# Environnement Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Artefacts d'entraînement et de conversion (volumineux)
+Jarvis/mlx-data/
+Jarvis/jarvis-mlx/
+Jarvis/jarvis-fused/
+Jarvis/export/
+Jarvis/.tools/
+Jarvis/.Modelfile.generated
+
+# Système
+.DS_Store

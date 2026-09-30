@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import subprocess
@@ -9,59 +8,58 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-
-def _env_flag(name: str, default: bool) -> bool:
-    """Lit un booléen depuis une variable d'environnement avec valeur par défaut."""
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int, min_value: int, max_value: int) -> int:
-    """Lit un entier de configuration et le borne entre min_value et max_value."""
-    raw = str(os.getenv(name, str(default))).strip()
-    try:
-        parsed = int(raw)
-    except ValueError:
-        parsed = default
-    return max(min_value, min(max_value, parsed))
+import events
+import voice
+from config import (
+    ALARM_NOTIFICATION_ENABLED,
+    ALARM_SOUND_ENABLED,
+    ALARM_SOUND_FILE,
+    ALARM_SOUND_REPEAT,
+)
+from persona import Reply, TITLE, format_time, format_when, period_label, plural, spoken_time, spoken_when
 
 
-ALARM_NOTIFICATION_ENABLED = _env_flag("ALARM_NOTIFICATION_ENABLED", True)
-ALARM_SOUND_ENABLED = _env_flag("ALARM_SOUND_ENABLED", True)
-ALARM_SOUND_REPEAT = _env_int("ALARM_SOUND_REPEAT", default=1, min_value=1, max_value=10)
-ALARM_SOUND_FILE = os.getenv("ALARM_SOUND_FILE", "").strip()
+MACOS_DEFAULT_CHIME = "/System/Library/Sounds/Glass.aiff"
+DELETE_HINT = "\nPour en supprimer une : /deletealarm \"id\""
+
+
+def _localize(value: datetime, timezone: Any) -> datetime:
+    """Place une date sans fuseau dans le fuseau de l'utilisateur."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone)
+    return value.astimezone(timezone)
 
 
 def format_alarm_datetime(value: datetime, timezone: Any) -> str:
     """Formate une date d'alarme dans le fuseau de l'utilisateur."""
-    local = value
-    if value.tzinfo is None:
-        local = value.replace(tzinfo=timezone)
-    local = local.astimezone(timezone)
-    return local.strftime("%A %d/%m %H:%M")
+    local = _localize(value, timezone)
+    return format_when(local, datetime.now(timezone))
 
 
-def format_alarm_list(items: list[dict], timezone: Any) -> str:
-    """Construit l'affichage texte des alarmes actives."""
+def _parse_when(item: dict, timezone: Any) -> datetime | None:
+    try:
+        return _localize(datetime.fromisoformat(str(item.get("when") or "")), timezone)
+    except ValueError:
+        return None
+
+
+def format_alarm_list(items: list[dict], timezone: Any) -> Reply:
+    """Construit l'affichage des alarmes actives."""
     if not items:
-        return "Aucune alarme active."
+        return Reply(text=f"Aucune alarme active, {TITLE}.", data={"alarms": 0})
 
-    lines = ["Alarmes actives :"]
+    now = datetime.now(timezone)
+    lines = [f"Vos alarmes actives, {TITLE} :"]
     for item in items:
-        raw = item.get("when", "")
-        label = item.get("label", "Alarme Jarvis")
-        alarm_id = item.get("id", "?")
-        try:
-            when = datetime.fromisoformat(raw)
-            when_text = format_alarm_datetime(when, timezone)
-        except ValueError:
-            when_text = raw
-        lines.append(f"- {alarm_id} -> {when_text} : {label}")
+        when = _parse_when(item, timezone)
+        when_text = format_when(when, now) if when else str(item.get("when", ""))
+        lines.append(f"- {when_text} : {item.get('label', 'Alarme')} [id: {item.get('id', '?')}]")
 
-    lines.append("\nUtilise /deletealarm \"id\" pour supprimer une alarme.")
-    return "\n".join(lines)
+    speech = f"Vous avez {plural(len(items), 'alarme active', 'alarmes actives')}, {TITLE}."
+    first_when = _parse_when(items[0], timezone)
+    if first_when:
+        speech += f" La prochaine : {items[0].get('label', 'Alarme')}, {spoken_when(first_when, now)}."
+    return Reply(text="\n".join(lines) + DELETE_HINT, speech=speech, data={"alarms": len(items)})
 
 
 def _run_command(command: list[str]) -> tuple[bool, str]:
@@ -91,8 +89,8 @@ def _notify_alarm_desktop(label: str, when: str) -> bool:
         return True
 
     system = platform.system().lower()
-    title = "Jarvis"
-    message = f"Alarme: {label} ({when})"
+    title = "J.A.R.V.I.S."
+    message = f"{label} ({when})"
 
     if system == "darwin":
         osascript = shutil.which("osascript")
@@ -139,26 +137,21 @@ def _play_alarm_sound() -> bool:
         return True
 
     system = platform.system().lower()
+    custom_sound = ALARM_SOUND_FILE if ALARM_SOUND_FILE and Path(ALARM_SOUND_FILE).exists() else ""
 
     if system == "darwin":
         afplay = shutil.which("afplay")
-        if afplay and ALARM_SOUND_FILE and Path(ALARM_SOUND_FILE).exists():
+        sound = custom_sound or (MACOS_DEFAULT_CHIME if Path(MACOS_DEFAULT_CHIME).exists() else "")
+        if afplay and sound:
             any_ok = False
             for _ in range(ALARM_SOUND_REPEAT):
-                ok, error = _run_command([afplay, ALARM_SOUND_FILE])
+                ok, error = _run_command([afplay, sound])
                 if ok:
                     any_ok = True
                 else:
                     print(f"[ALARM] afplay échoué: {error}", flush=True)
             if any_ok:
                 return True
-
-        say_cmd = shutil.which("say")
-        if say_cmd:
-            ok, error = _run_command([say_cmd, "Alarme Jarvis"])
-            if ok:
-                return True
-            print(f"[ALARM] Fallback say échoué: {error}", flush=True)
 
         osascript = shutil.which("osascript")
         if osascript:
@@ -170,10 +163,10 @@ def _play_alarm_sound() -> bool:
     elif system == "linux":
         for candidate in ["paplay", "aplay", "play"]:
             cmd = shutil.which(candidate)
-            if cmd and ALARM_SOUND_FILE and Path(ALARM_SOUND_FILE).exists():
+            if cmd and custom_sound:
                 any_ok = False
                 for _ in range(ALARM_SOUND_REPEAT):
-                    ok, error = _run_command([cmd, ALARM_SOUND_FILE])
+                    ok, error = _run_command([cmd, custom_sound])
                     if ok:
                         any_ok = True
                     else:
@@ -188,11 +181,11 @@ def _play_alarm_sound() -> bool:
         try:
             import winsound
 
-            if ALARM_SOUND_FILE and Path(ALARM_SOUND_FILE).exists():
+            if custom_sound:
                 any_ok = False
                 for _ in range(ALARM_SOUND_REPEAT):
                     try:
-                        winsound.PlaySound(ALARM_SOUND_FILE, winsound.SND_FILENAME)
+                        winsound.PlaySound(custom_sound, winsound.SND_FILENAME)
                         any_ok = True
                     except Exception as exc:
                         print(f"[ALARM] winsound.PlaySound échoué: {exc}", flush=True)
@@ -211,10 +204,24 @@ def _play_alarm_sound() -> bool:
     return False
 
 
-def trigger_local_alarm(label: str, when: str) -> tuple[bool, bool]:
-    """Déclenche la notification et le son locaux pour une alarme."""
+def alarm_announcement(label: str, now: datetime | None = None) -> str:
+    """Phrase prononcée par Jarvis quand une alarme sonne."""
+    label = (label or "").strip()
+    if label.lower().startswith("minuteur"):
+        subject = label.partition(":")[2].strip()
+        return f"{TITLE}, votre minuteur est écoulé : {subject}." if subject else f"{TITLE}, votre minuteur est écoulé."
+    moment = spoken_time(now or datetime.now())
+    if not label or label.lower() in {"alarme", "alarme jarvis", "réveil"}:
+        return f"{TITLE}, il est {moment}."
+    return f"{TITLE}, il est {moment}. {label}."
+
+
+def trigger_local_alarm(label: str, when: str, speak: bool = True) -> tuple[bool, bool]:
+    """Déclenche la notification, le son puis l'annonce vocale d'une alarme."""
     notification_ok = _notify_alarm_desktop(label, when)
     sound_ok = _play_alarm_sound()
+    if speak and ALARM_SOUND_ENABLED:
+        voice.speak_local(alarm_announcement(label))
     return notification_ok, sound_ok
 
 
@@ -224,59 +231,135 @@ def alarm_scheduler_loop(alarms: Any) -> None:
         due = alarms.trigger_due_alarms()
         for item in due:
             alarm_id = item.get("id", "?")
-            label = item.get("label", "Alarme Jarvis")
+            label = item.get("label", "Alarme")
             when = item.get("when", "")
             print(f"[ALARM] {alarm_id} {when} -> {label}", flush=True)
-            notification_ok, sound_ok = trigger_local_alarm(label, when)
+
+            # Si un HUD est ouvert, c'est lui qui prend la parole (avec l'animation) ;
+            # sinon Jarvis parle directement sur les haut-parleurs du poste.
+            hud_present = events.hud_is_listening()
+            events.publish(
+                "alarm",
+                alarm_id=alarm_id,
+                label=label,
+                when=when,
+                speech=alarm_announcement(label, datetime.now(alarms.timezone)),
+            )
+            notification_ok, sound_ok = trigger_local_alarm(label, when, speak=not hud_present)
             print(f"[ALARM] local-alert notification={notification_ok} sound={sound_ok}", flush=True)
-        time.sleep(5)
+        time.sleep(2)
 
 
-def handle_set_alarm(alarms: Any, timezone: Any, params: dict) -> str:
-    """Crée une alarme locale."""
-    when = datetime.fromisoformat(params["when"])
+def format_delay(seconds: float) -> str:
+    """Formate une durée de minuteur (« 45 secondes », « 10 minutes », « 1 h 30 »)."""
+    total = max(1, round(seconds))
+    if total < 60:
+        return plural(total, "seconde")
+    minutes = round(total / 60)
+    if minutes < 60:
+        return plural(minutes, "minute")
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} h {rest:02d}" if rest else plural(hours, "heure")
+
+
+def handle_set_alarm(alarms: Any, timezone: Any, params: dict) -> Reply:
+    """Crée une alarme, un minuteur ou un rappel local."""
+    now = datetime.now(timezone)
+    when = _localize(datetime.fromisoformat(params["when"]), timezone)
     title = params["title"]
+    kind = params.get("kind", "alarm")
+
+    if when < now - timedelta(seconds=30):
+        return Reply(text=f"Cette heure est déjà passée, {TITLE}. Quelle échéance souhaitez-vous ?")
+
     created = alarms.create_alarm(when, title)
-    when_text = format_alarm_datetime(datetime.fromisoformat(created["when"]), timezone)
-    return f"Alarme créée: {created['id']} -> {when_text} ({created['label']})"
+    when = _localize(datetime.fromisoformat(created["when"]), timezone)
+    suffix = f" [id: {created['id']}]"
+
+    if kind == "timer":
+        duration = format_delay((when - now).total_seconds())
+        return Reply(
+            text=f"Minuteur lancé, {TITLE} : {duration} (fin à {format_time(when)}).{suffix}",
+            speech=f"Minuteur lancé, {TITLE} : {duration}.",
+            data={"alarm": created},
+        )
+
+    if kind == "reminder":
+        return Reply(
+            text=f"Entendu, {TITLE}. Je vous le rappellerai {format_when(when, now)} : « {created['label']} ».{suffix}",
+            speech=f"Entendu, {TITLE}. Je vous le rappellerai {spoken_when(when, now)}.",
+            data={"alarm": created},
+        )
+
+    label = created["label"]
+    if label == "Réveil":
+        headline, spoken = "Réveil programmé", "Réveil programmé"
+    else:
+        headline = spoken = "Alarme programmée"
+    # Un titre par défaut n'apporte rien : on ne l'affiche que s'il a été choisi.
+    detail = "" if label in {"Alarme", "Réveil"} else f" : « {label} »"
+    return Reply(
+        text=f"{headline} pour {format_when(when, now)}, {TITLE}{detail}.{suffix}",
+        speech=f"{spoken} pour {spoken_when(when, now)}, {TITLE}.",
+        data={"alarm": created},
+    )
 
 
-def handle_list_alarms(alarms: Any, timezone: Any) -> str:
+def handle_list_alarms(alarms: Any, timezone: Any) -> Reply:
     """Retourne la liste des alarmes formatée."""
     return format_alarm_list(alarms.list_alarms(), timezone)
 
 
-def handle_delete_alarm(alarms: Any, params: dict) -> str:
+def handle_delete_alarm(alarms: Any, params: dict) -> Reply:
     """Supprime une alarme par identifiant."""
     alarm_id = params["alarm_id"]
-    deleted = alarms.delete_alarm(alarm_id)
-    if deleted:
-        return f"Alarme supprimée: {alarm_id}"
-    return f"Aucune alarme trouvée pour: {alarm_id}"
+    if alarms.delete_alarm(alarm_id):
+        return Reply(text=f"Alarme supprimée, {TITLE} ({alarm_id}).", speech=f"Alarme supprimée, {TITLE}.")
+    return Reply(
+        text=f"Je ne trouve aucune alarme portant l'identifiant {alarm_id}, {TITLE}.",
+        speech=f"Je ne trouve aucune alarme portant cet identifiant, {TITLE}.",
+    )
 
 
-def handle_delete_alarms_range(alarms: Any, params: dict) -> str:
+def handle_delete_alarms_range(alarms: Any, params: dict) -> Reply:
     """Supprime les alarmes sur une plage de dates."""
-    start = datetime.fromisoformat(params["start"])
-    end = datetime.fromisoformat(params["end"])
+    timezone = alarms.timezone
+    start = _localize(datetime.fromisoformat(params["start"]), timezone)
+    end = _localize(datetime.fromisoformat(params["end"]), timezone)
     deleted_count = alarms.delete_alarms_in_range(start, end)
 
-    period_start = start.strftime("%d/%m/%Y")
-    period_end = (end - timedelta(seconds=1)).strftime("%d/%m/%Y")
+    period = period_label(start, end, datetime.now(timezone))
 
     if deleted_count == 0:
-        if period_start == period_end:
-            return f"Aucune alarme trouvée à supprimer le {period_start}."
-        return f"Aucune alarme trouvée à supprimer entre le {period_start} et le {period_end}."
-
-    if period_start == period_end:
-        return f"{deleted_count} alarme(s) supprimée(s) le {period_start}."
-    return f"{deleted_count} alarme(s) supprimée(s) entre le {period_start} et le {period_end}."
+        return Reply(text=f"Aucune alarme à supprimer {period}, {TITLE}.")
+    return Reply(
+        text=f"C'est fait, {TITLE} : {plural(deleted_count, 'alarme supprimée', 'alarmes supprimées')} {period}."
+    )
 
 
-def handle_delete_alarms_all(alarms: Any) -> str:
-    """Supprime toutes les alarmes actives et déclenchées."""
+def handle_delete_timers(alarms: Any) -> Reply:
+    """Arrête les minuteurs en cours."""
+    deleted_count = alarms.delete_alarms_with_label_prefix("Minuteur")
+    if deleted_count == 0:
+        return Reply(text=f"Aucun minuteur en cours, {TITLE}.")
+    if deleted_count == 1:
+        return Reply(text=f"Minuteur arrêté, {TITLE}.")
+    return Reply(text=f"C'est fait, {TITLE} : {deleted_count} minuteurs arrêtés.")
+
+
+def handle_delete_alarms_all(alarms: Any, params: dict | None = None) -> Reply:
+    """Supprime toutes les alarmes (après confirmation si params["confirm"] est vrai)."""
+    if (params or {}).get("confirm"):
+        active = alarms.list_alarms()
+        if not active:
+            return Reply(text=f"Aucune alarme à supprimer, {TITLE}.")
+        count = plural(len(active), "alarme active", "alarmes actives")
+        return Reply(
+            text=f"Vous avez {count}, {TITLE}. Dois-je tout supprimer ?",
+            pending={"action": "delete_alarms_all", "params": {}},
+        )
+
     deleted_count = alarms.delete_all_alarms(include_triggered=True)
     if deleted_count == 0:
-        return "Aucune alarme à supprimer."
-    return f"Toutes les alarmes ont été supprimées ({deleted_count})."
+        return Reply(text=f"Aucune alarme à supprimer, {TITLE}.")
+    return Reply(text=f"C'est fait, {TITLE} : toutes les alarmes sont supprimées.")

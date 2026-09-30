@@ -3,38 +3,81 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from persona import (
+    Reply,
+    TITLE,
+    day_label,
+    format_date,
+    format_time,
+    format_when,
+    period_label,
+    plural,
+    spoken_time,
+    spoken_when,
+)
+
+
+DELETE_HINT = "\nPour en supprimer un : /deleteevent \"id\""
+
+
+def _localize(value: datetime, timezone: Any) -> datetime:
+    """Place une date sans fuseau dans le fuseau de l'utilisateur."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone)
+    return value.astimezone(timezone)
+
 
 def format_datetime(value: datetime) -> str:
     """Formate une date/heure dans un format lisible pour l'utilisateur."""
-    return value.strftime("%A %d/%m %H:%M")
+    return f"{format_date(value)} {format_time(value)}"
 
 
-def format_week_events(events: list[dict]) -> str:
-    """Construit le rendu texte des événements de la semaine."""
+def _event_line(event: dict) -> str:
+    """Formate un événement sur une ligne pour l'affichage."""
+    start = event["start"]
+    end = event["end"]
+    if event.get("isAllDay"):
+        when = f"{format_date(start)}, toute la journée"
+    else:
+        when = f"{format_datetime(start)} → {format_time(end)}"
+    line = f"- {when} : {event['subject']} [id: {event.get('id') or '?'}]"
+    if event.get("location"):
+        line += f" ({event['location']})"
+    return line
+
+
+def _spoken_event(event: dict, now: datetime) -> str:
+    """Formate un événement pour la voix (« Réunion client, demain à 10 heures »)."""
+    if event.get("isAllDay"):
+        return f"{event['subject']}, {day_label(event['start'], now)}, toute la journée"
+    return f"{event['subject']}, {spoken_when(event['start'], now)}"
+
+
+def format_week_events(events: list[dict], now: datetime) -> Reply:
+    """Construit le rendu des événements de la semaine."""
     if not events:
-        return " Aucun événement cette semaine."
+        return Reply(text=f"Aucun événement cette semaine, {TITLE}. Votre agenda est libre.", data={"events": 0})
 
-    lines = [" Événements de la semaine :"]
-    for event in events:
-        start = event["start"]
-        end = event["end"]
-        subject = event["subject"]
-        event_id = event.get("id") or "?"
-        location = event.get("location")
-        line = f"- {format_datetime(start)} -> {end.strftime('%H:%M')} : {subject} [id: {event_id}]"
-        if location:
-            line += f" ({location})"
-        lines.append(line)
-    lines.append("\nUtilise /deleteevent \"id\" pour supprimer un événement.")
-    return "\n".join(lines)
+    lines = [f"Vos événements de la semaine, {TITLE} :"]
+    lines.extend(_event_line(event) for event in events)
+
+    speech = f"Vous avez {plural(len(events), 'rendez-vous', 'rendez-vous')} cette semaine, {TITLE}."
+    upcoming = [event for event in events if event["end"] >= now]
+    if upcoming:
+        speech += f" Le prochain : {_spoken_event(upcoming[0], now)}."
+    else:
+        speech += " Ils sont tous passés."
+    return Reply(text="\n".join(lines) + DELETE_HINT, speech=speech, data={"events": len(events)})
 
 
-def compute_availability(events: list[dict], timezone: Any) -> str:
+def compute_availability(events: list[dict], timezone: Any) -> Reply:
     """Calcule les créneaux libres de la semaine selon les événements existants."""
     now = datetime.now(timezone)
     monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
 
-    lines = [" Tes disponibilités (lun-ven, 09:00-18:00) :"]
+    lines = [f"Vos disponibilités cette semaine (lundi-vendredi, 9 h-18 h), {TITLE} :"]
+    first_free: tuple[datetime, datetime] | None = None
+
     for day_offset in range(5):
         day = monday + timedelta(days=day_offset)
         work_start = day.replace(hour=9, minute=0)
@@ -65,101 +108,151 @@ def compute_availability(events: list[dict], timezone: Any) -> str:
         if cursor < work_end:
             free.append((cursor, work_end))
 
-        day_name = day.strftime("%A")
         if not free:
-            lines.append(f"- {day_name}: occupé")
+            lines.append(f"- {format_date(day)} : occupé")
             continue
 
-        slots = ", ".join(f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}" for s, e in free)
-        lines.append(f"- {day_name}: {slots}")
+        slots = ", ".join(f"{format_time(s)}-{format_time(e)}" for s, e in free)
+        lines.append(f"- {format_date(day)} : {slots}")
 
-    return "\n".join(lines)
+        if first_free is None:
+            for slot_start, slot_end in free:
+                if slot_end > now:
+                    first_free = (max(slot_start, now), slot_end)
+                    break
+
+    if first_free is None:
+        speech = f"Je crains que votre semaine ne soit complète, {TITLE}."
+    else:
+        slot_start, slot_end = first_free
+        if slot_start <= now:
+            opening = f"Vous êtes libre dès maintenant, jusqu'à {spoken_time(slot_end)}"
+        else:
+            opening = (
+                f"Votre premier créneau libre est {day_label(slot_start, now)}, "
+                f"de {spoken_time(slot_start)} à {spoken_time(slot_end)}"
+            )
+        speech = f"{opening}, {TITLE}. Le détail de la semaine est à l'écran."
+
+    return Reply(text="\n".join(lines), speech=speech)
 
 
-def handle_events_week(mail_client: Any) -> str:
+def handle_events_week(mail_client: Any) -> Reply:
     """Retourne les événements de la semaine formatés."""
-    return format_week_events(mail_client.list_week_events())
+    return format_week_events(mail_client.list_week_events(), datetime.now(mail_client.timezone))
 
 
-def handle_availability_week(mail_client: Any) -> str:
+def handle_availability_week(mail_client: Any) -> Reply:
     """Retourne les disponibilités calculées à partir du calendrier."""
     return compute_availability(mail_client.list_week_events(), mail_client.timezone)
 
 
-def handle_add_event(mail_client: Any, params: dict) -> str:
-    """Crée un événement calendrier."""
+def handle_add_event(mail_client: Any, params: dict) -> Reply:
+    """Crée un événement calendrier et signale un éventuel chevauchement."""
     title = params["title"]
-    start = datetime.fromisoformat(params["start"])
-    end = datetime.fromisoformat(params["end"])
+    timezone = mail_client.timezone
+    start = _localize(datetime.fromisoformat(params["start"]), timezone)
+    end = _localize(datetime.fromisoformat(params["end"]), timezone)
+    now = datetime.now(timezone)
+
+    # Proactivité : on relève les événements déjà prévus sur ce créneau avant de créer.
+    conflicts: list[dict] = []
+    try:
+        conflicts = [event for event in mail_client.list_events_in_range(start, end) if not event.get("isAllDay")]
+    except Exception as exc:
+        print(f"[CALENDAR] Vérification des conflits impossible: {exc}", flush=True)
+
     created = mail_client.create_event(title, start, end)
     web_link = created.get("webLink") or created.get("htmlLink")
-    reply = f" Événement créé: {title} ({start.strftime('%d/%m %H:%M')} -> {end.strftime('%H:%M')})"
+
+    text = f"C'est noté, {TITLE} : « {title} », {format_when(start, now)} → {format_time(end)}."
+    speech = f"C'est noté, {TITLE}. {title}, {spoken_when(start, now)}."
+    if conflicts:
+        other = conflicts[0]
+        text += (
+            f"\nJe me permets de signaler que ce créneau chevauche « {other['subject']} » "
+            f"({format_time(other['start'])} → {format_time(other['end'])})."
+        )
+        speech += f" Je me permets de signaler que ce créneau chevauche {other['subject']}."
     if web_link:
-        reply += f"\nLien calendrier: {web_link}"
-    return reply
+        text += f"\nLien calendrier : {web_link}"
+    return Reply(text=text, speech=speech, data={"conflicts": len(conflicts)})
 
 
-def handle_delete_event(mail_client: Any, params: dict) -> str:
+def handle_delete_event(mail_client: Any, params: dict) -> Reply:
     """Supprime un événement par identifiant."""
     event_id = str(params.get("event_id") or "").strip()
     if not event_id:
-        return "Identifiant d'événement manquant."
-    deleted = mail_client.delete_event(event_id)
-    if deleted:
-        return f"Événement supprimé: {event_id}"
-    return f"Aucun événement trouvé pour: {event_id}"
+        return Reply(text=f"Il me manque l'identifiant de l'événement, {TITLE}.")
+    if mail_client.delete_event(event_id):
+        return Reply(text=f"Événement supprimé, {TITLE} ({event_id}).", speech=f"Événement supprimé, {TITLE}.")
+    return Reply(
+        text=f"Je ne trouve aucun événement portant l'identifiant {event_id}, {TITLE}.",
+        speech=f"Je ne trouve aucun événement portant cet identifiant, {TITLE}.",
+    )
 
 
-def handle_delete_events_range(mail_client: Any, params: dict) -> str:
-    """Supprime les événements sur une plage de dates."""
-    start = datetime.fromisoformat(params["start"])
-    end = datetime.fromisoformat(params["end"])
-    deleted_events = mail_client.delete_events_in_range(start, end)
-    count = len(deleted_events)
+def handle_delete_events_range(mail_client: Any, params: dict) -> Reply:
+    """Supprime les événements sur une plage de dates.
 
-    period_start = start.strftime("%d/%m/%Y")
-    period_end = (end - timedelta(seconds=1)).strftime("%d/%m/%Y")
+    Si params["confirm"] est vrai, rien n'est supprimé : Jarvis énumère les
+    événements concernés et attend un « oui ».
+    """
+    timezone = mail_client.timezone
+    start = _localize(datetime.fromisoformat(params["start"]), timezone)
+    end = _localize(datetime.fromisoformat(params["end"]), timezone)
+    period = period_label(start, end, datetime.now(timezone))
 
+    if params.get("confirm"):
+        events = mail_client.list_events_in_range(start, end)
+        if not events:
+            return Reply(text=f"Aucun événement à supprimer {period}, {TITLE}.")
+        names = ", ".join(f"« {event['subject']} »" for event in events[:5])
+        if len(events) > 5:
+            names += "…"
+        count = plural(len(events), "événement", "événements")
+        return Reply(
+            text=f"Vous avez {count} {period}, {TITLE} : {names}.\nDois-je tout supprimer ?",
+            speech=f"Vous avez {count} {period}, {TITLE}. Dois-je tout supprimer ?",
+            pending={
+                "action": "delete_events_range",
+                "params": {"start": params["start"], "end": params["end"]},
+            },
+        )
+
+    count = len(mail_client.delete_events_in_range(start, end))
     if count == 0:
-        if period_start == period_end:
-            return f"Aucun événement trouvé à supprimer le {period_start}."
-        return f"Aucun événement trouvé à supprimer entre le {period_start} et le {period_end}."
-
-    if period_start == period_end:
-        return f"{count} événement(s) supprimé(s) le {period_start}."
-    return f"{count} événement(s) supprimé(s) entre le {period_start} et le {period_end}."
+        return Reply(text=f"Aucun événement à supprimer {period}, {TITLE}.")
+    if count == 1:
+        return Reply(text=f"C'est fait, {TITLE} : l'événement prévu {period} est supprimé.")
+    return Reply(text=f"C'est fait, {TITLE} : {count} événements supprimés {period}.")
 
 
-def handle_events_range(mail_client: Any, params: dict) -> str:
+def handle_events_range(mail_client: Any, params: dict) -> Reply:
     """Retourne les événements d'un jour précis ou d'une période."""
-    start = datetime.fromisoformat(params["start"])
-    end = datetime.fromisoformat(params["end"])
+    timezone = mail_client.timezone
+    start = _localize(datetime.fromisoformat(params["start"]), timezone)
+    end = _localize(datetime.fromisoformat(params["end"]), timezone)
+    now = datetime.now(timezone)
+    period = period_label(start, end, now)
     events = mail_client.list_events_in_range(start, end)
 
-    period_start = start.strftime("%d/%m/%Y")
-    period_end = (end - timedelta(seconds=1)).strftime("%d/%m/%Y")
-
     if not events:
-        if period_start == period_end:
-            return f"Aucun événement trouvé le {period_start}."
-        return f"Aucun événement trouvé entre le {period_start} et le {period_end}."
+        return Reply(text=f"Rien de prévu {period}, {TITLE}.", data={"events": 0})
 
-    lines = []
-    if period_start == period_end:
-        lines.append(f"Événements du {period_start} :")
+    lines = [f"Vos événements {period}, {TITLE} :"]
+    lines.extend(_event_line(event) for event in events)
+
+    single_day = start.date() == (end - timedelta(seconds=1)).date()
+    count = plural(len(events), "rendez-vous", "rendez-vous")
+    speech = f"Vous avez {count} {period}, {TITLE}."
+    if single_day:
+        spoken = [
+            f"{event['subject']}, toute la journée" if event.get("isAllDay")
+            else f"{event['subject']} à {spoken_time(event['start'])}"
+            for event in events[:3]
+        ]
+        speech += " " + " ; ".join(spoken) + "."
     else:
-        lines.append(f"Événements entre le {period_start} et le {period_end} :")
-
-    for event in events:
-        start_dt = event["start"]
-        end_dt = event["end"]
-        subject = event["subject"]
-        event_id = event.get("id") or "?"
-        location = event.get("location")
-        line = f"- {start_dt.strftime('%A %d/%m %H:%M')} -> {end_dt.strftime('%H:%M')} : {subject} [id: {event_id}]"
-        if location:
-            line += f" ({location})"
-        lines.append(line)
-
-    lines.append("\nUtilise /deleteevent \"id\" pour supprimer un événement.")
-    return "\n".join(lines)
+        speech += f" Le premier : {_spoken_event(events[0], now)}."
+    return Reply(text="\n".join(lines) + DELETE_HINT, speech=speech, data={"events": len(events)})

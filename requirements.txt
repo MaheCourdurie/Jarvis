@@ -1,9 +1,14 @@
-discord.py
-python-dotenv
-mlx-lm
+# API, HUD et pilotage du poste
 fastapi
 uvicorn
 requests
+python-dotenv
+psutil
+
+# Google (Gmail + Calendar)
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+
+# Bot Discord
+discord.py

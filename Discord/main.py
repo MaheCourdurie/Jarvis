@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any
+from typing import Any, Optional
 import discord
 import requests
 from discord import app_commands
@@ -56,6 +56,8 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 conversations: dict[int, list[dict[str, str]]] = {}
+# Action proposée par Jarvis et en attente d'un « oui » ou d'un « non », par utilisateur.
+pending_actions: dict[int, dict[str, Any]] = {}
 JARVIS_API_URL = validate_jarvis_api_url(JARVIS_API_URL)
 
 
@@ -64,21 +66,17 @@ def trim_history(history: list[dict[str, str]]) -> None:
         history[:] = history[-MAX_HISTORY:]
 
 
-def normalize_api_reply(reply: str) -> str:
-    cleaned = (reply or "").strip()
-    lowered = cleaned.lower()
-
-    if "compte google non configuré" in lowered or "variables manquantes: google_token_file" in lowered:
-        return "Google pas connecte. Veuillez faire la connexion avec la commande /google."
-
-    return cleaned
+GOOGLE_REQUIRED_REPLY = "La liaison Google n'est pas établie. Lancez la commande /google pour connecter votre compte."
 
 
-def ask_jarvis(history: list[dict[str, str]], message: str) -> str:
+def ask_jarvis(history: list[dict[str, str]], message: str, user_id: Optional[int] = None) -> str:
     payload: dict[str, Any] = {
         "message": message,
         "history": history,
-        "temperature": 0.3,
+        "temperature": 0.6,
+        # L'API sait ainsi que la demande vient de l'extérieur : elle ne pilotera pas le poste.
+        "client": "discord",
+        "pending": pending_actions.get(user_id) if user_id is not None else None,
     }
     response = requests.post(JARVIS_API_URL, json=payload, timeout=JARVIS_API_TIMEOUT)
     response.raise_for_status()
@@ -88,8 +86,17 @@ def ask_jarvis(history: list[dict[str, str]], message: str) -> str:
             "Réponse API invalide (champ 'reply' absent). "
             "Vérifie que JARVIS_API_URL pointe vers /api/chat de Jarvis."
         )
-    raw_reply = (data.get("reply") or "Je n'ai pas de réponse pour le moment.")
-    return normalize_api_reply(raw_reply)
+
+    # Jarvis demande une confirmation (envoi de mail, suppression) : on la mémorise pour le tour suivant.
+    if user_id is not None:
+        if data.get("pending"):
+            pending_actions[user_id] = data["pending"]
+        else:
+            pending_actions.pop(user_id, None)
+
+    if (data.get("data") or {}).get("google_required"):
+        return GOOGLE_REQUIRED_REPLY
+    return (data.get("reply") or "Je n'ai pas de réponse pour le moment.").strip()
 
 
 async def send_long_message(channel: discord.abc.Messageable, text: str) -> None:
@@ -199,7 +206,7 @@ async def on_message(message: discord.Message) -> None:
     trim_history(history)
 
     try:
-        reply = ask_jarvis(history, cleaned_content)
+        reply = ask_jarvis(history, cleaned_content, user_id=message.author.id)
     except Exception as exc:
         logger.exception("Erreur avec l'API Jarvis")
         reply = f"Erreur avec l'API Jarvis: {exc}"

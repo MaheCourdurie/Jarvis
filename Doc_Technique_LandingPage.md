@@ -13,6 +13,8 @@ Le dossier contient 2 fichiers:
 
 Cette landing page est statique et ne charge actuellement aucun script JavaScript.
 
+Son bouton principal ouvre le HUD de Jarvis (`http://localhost:8001/`), servi par l'API : il faut donc que `./run_jarvis.sh start` tourne.
+
 ---
 
 ## `index.html` (resume)

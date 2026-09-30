@@ -6,24 +6,26 @@ Ce dossier contient le cœur technique du projet Jarvis:
 
 - l'entraînement du modèle local
 - la conversion vers le format GGUF
-- le prompt système partagé
-- l'API FastAPI qui orchestre les actions métier
+- le prompt système partagé (la personnalité de Jarvis)
+- l'API FastAPI qui orchestre les actions métier, la voix et la conversation
+- le HUD, l'interface holographique servie par l'API
 - les scripts d'aide pour générer et tester le modèle Ollama
 
 ## Fichiers principaux
 
 ### `Modelfile`
 - **Role**: base Ollama utilisée pour créer le modèle `jarvis`.
-- **Contenu**: chemin vers le GGUF, prompt système, paramètres de génération.
-- **Utilisation**: `ollama create jarvis -f Modelfile`. 
+- **Contenu**: chemin vers le GGUF fine-tuné, paramètres de génération.
+- **Utilisation**: `./run_jarvis.sh create`. Si le GGUF fine-tuné existe, il est utilisé ; sinon la ligne `FROM` est remplacée par le modèle de base `JARVIS_BASE_MODEL` (`gemma4:e4b` par défaut) et les jetons d'arrêt propres au modèle fine-tuné sont retirés. Dans les deux cas, le prompt système est injecté.
 
 ### `conversations.jsonl`
 - **Role**: dataset conversationnel pour le fine-tuning MLX.
+- **Contenu**: une centaine d'échanges dans le ton de Jarvis : vouvoiement, « Monsieur », flegme et humour discret, réponses courtes faites pour être dites, culture générale, et refus de prétendre avoir exécuté une action. Les exemples ne contiennent pas de prompt système : `train.py` l'ajoute.
 - **Utilisation**: lu directement par `train.py`.
 
 ### `system_prompt.txt`
-- **Role**: prompt système de référence partagé entre entraînement et inférence.
-- **Utilisation**: chargé par l'API et injecté dans le Modelfile final.
+- **Role**: prompt système de référence partagé entre entraînement et inférence. Il définit la personnalité (majordome britannique, vouvoiement), le style (phrases courtes, sans markdown, faites pour la voix) et les règles absolues (ne jamais affirmer avoir agi, ne jamais inventer de données).
+- **Utilisation**: chargé par l'API et injecté dans le Modelfile final. Le marqueur `{titre}` est remplacé par la formule d'appel (`JARVIS_USER_TITLE`, « Monsieur » par défaut).
 
 ### `train.py`
 - **Role**: lance le fine-tuning MLX LoRA, puis fusionne les adaptateurs avec le modèle de base.
@@ -33,22 +35,26 @@ Ce dossier contient le cœur technique du projet Jarvis:
 
 | Fonction | Paramètres | Rôle |
 |---|---|---|
-| `load_system_prompt()` | aucun | charge le prompt systeme partage depuis `system_prompt.txt` ou renvoie un prompt par defaut |
-| `prepare_dataset()` | aucun | convertit `conversations.jsonl` au format MLX, remplace le système prompt si besoin et crée `mlx-data/train.jsonl` + `mlx-data/valid.jsonl` |
-| `run_training()` | aucun | lance `python -m mlx_lm lora` avec les paramètres de configuration du script |
+| `load_user_title()` | aucun | lit la formule d'appel (`JARVIS_USER_TITLE`) dans l'environnement ou le `.env` |
+| `load_system_prompt()` | aucun | charge le prompt systeme partage depuis `system_prompt.txt` et y inscrit la formule d'appel |
+| `prepare_dataset()` | aucun | convertit `conversations.jsonl` au format « chat » de MLX (`{"messages": [...]}`), ajoute le prompt système, mélange et crée `mlx-data/train.jsonl` + `mlx-data/valid.jsonl` |
+| `run_training()` | aucun | lance `python -m mlx_lm lora` avec `--mask-prompt` : l'apprentissage porte sur les réponses de Jarvis, pas sur le prompt système répété |
+| `local_model_path()` | aucun | complète la copie locale du modèle de base, exigée par `mlx_lm fuse` |
 | `fuse_model()` | aucun | fusionne les adaptateurs LoRA avec le modèle de base et écrit le modèle final dans `jarvis-fused/` |
 | `test_model()` | aucun | envoie quelques prompts de test au modèle fusionné pour vérifier le comportement |
+
+Le format « chat » laisse `mlx_lm` appliquer le gabarit de conversation du modèle : l'entraînement voit donc exactement la mise en forme qu'Ollama utilisera à l'inférence.
 
 #### Paramètres de configuration du script
 
 | Constante | Rôle |
 |---|---|
-| `MODEL_NAME` | nom du modèle de base téléchargé depuis Hugging Face |
+| `MODEL_NAME` | nom du modèle de base téléchargé depuis Hugging Face (surchargeable par `JARVIS_TRAIN_MODEL`) |
 | `DATASET_PATH` | chemin vers le dataset JSONL d'entraînement |
 | `MLX_DATA_DIR` | dossier de sortie pour les données train/valid |
 | `ADAPTER_DIR` | dossier de sortie des adaptateurs LoRA |
 | `FUSED_DIR` | dossier de sortie du modèle fusionné |
-| `ITERS` | nombre d'itérations d'entraînement |
+| `ITERS` | nombre d'itérations d'entraînement (surchargeable par `JARVIS_TRAIN_ITERS`) |
 | `BATCH_SIZE` | taille de lot |
 | `LEARNING_RATE` | taux d'apprentissage |
 | `LORA_LAYERS` | nombre de couches adaptées |
@@ -87,23 +93,25 @@ Ce dossier contient le cœur technique du projet Jarvis:
 
 Ce sous-dossier contient l'API applicative. La documentation detaillee de chaque fichier se trouve dans [API/README.md](API/README.md).
 
-Points cles recents sur le flux mail naturel:
+Points cles:
 
-- les formulations indirectes sont interpretees (`pour lui dire que ...`, `dire qu'il ...`, `et lui dire ...`)
-- si l'adresse a deja ete mentionnee, une reponse de suivi (`message ...`, `objet ...`, `sujet ...`) peut reutiliser ce destinataire
-- si le message est absent, l'API demande des precisions et n'envoie rien
-- l'objet auto-genere est force a 1-2 mots maximum, avec filtrage des sorties verbeuses du modele
-- en mode `auto_polish`, si le modele recopie le brouillon brut, l'API force un fallback de corps formate (salutation + message + cloture)
-- les contenus inappropries (insultes/grossieretes explicites) sont bloques avant l'appel au provider mail
-- les contournements avec des lettres separees (`z i z i`, `sui ci der`, etc.) sont aussi detectes via une normalisation compacte
-- les demandes de support `help` / `aide` / `commandes` renvoient directement la liste complete des commandes
-- les demandes `que peux-tu faire` (et variantes proches) renvoient un resume des capacites (emails, calendrier, alarmes)
-- ces deux reponses de support sont traitees avant le fallback strict/permissif (refus hors perimetre ou appel Ollama)
+- le routeur d'intentions (`intents.py`) reconnaît les actions ; tout le reste est une conversation, confiée au modèle
+- chaque module renvoie un texte affiché et une version orale, dans le ton de Jarvis (`persona.py`)
+- le modèle ne déclenche jamais d'action : s'il prétend en avoir exécuté une, sa réponse est remplacée (`llm.py`)
+- les envois de mail et les suppressions en masse demandés en langage naturel passent par une confirmation
+- la voix est locale : synthèse Piper (ou `say` sur macOS), reconnaissance Whisper (`voice.py`)
+- les alarmes sont annoncées à voix haute, par le HUD s'il est ouvert, sinon par l'API (`alarm_actions.py`, `events.py`)
+- l'API n'accepte que les requêtes de ce poste (`main.py`)
 
 ## Sous-dossier `Interface/`
 
-Contient l'interface web de test du model:
+Contient le HUD, l'interface de Jarvis (servie par l'API sur `http://localhost:8001/`):
 
-- `test_interface.html`
-- `test_interface.js`
-- `test_interface.css`
+- `index.html` : structure (séquence de démarrage, réacteur, panneaux, journal)
+- `hud.css` : thème holographique
+- `hud.js` : dialogue avec l'API, panneaux, états du HUD
+- `core.js` : réacteur central animé
+- `voice.js` : micro, détection de parole, lecture de la voix
+- `mic-worklet.js` : capture audio
+
+Le détail est dans [Doc_Technique_Train.md](Doc_Technique_Train.md).

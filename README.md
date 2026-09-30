@@ -3,97 +3,173 @@
 
 ## Présentation générale du sujet
 
-J.A.R.V.I.S est un assistant personnel local qui répond à un besoin classique du sujet:
+J.A.R.V.I.S est un assistant personnel local, pensé comme celui de Tony Stark dans Iron Man :
 
-- un chatbot fonctionnel et testable
-- une interface de démonstration
-- des actions métier réelles (emails, calendrier, alarmes)
-- une architecture claire entre intentions, API, intégrations et modèle local
+- tu lui **parles** (« Jarvis, quel temps fait-il ? ») et il te **répond à voix haute**
+- il a le caractère du majordome : il te vouvoie, t'appelle « Monsieur », reste flegmatique et pince-sans-rire
+- il s'affiche dans un **HUD holographique** : réacteur animé qui réagit à la voix, capteurs système, agenda, météo
+- il **agit** vraiment : emails, calendrier, alarmes, minuteurs, applications, volume, recherches
+- il est **proactif** : briefing d'accueil, annonce des alarmes, signalement des conflits d'agenda et de la batterie faible
+- il **converse** librement sur n'importe quel sujet, grâce à un modèle de langage local
 
 Le projet combine:
 
-- une API Python pour les actions réelles (Gmail + Google Calendar + alarmes locales)
-- un modèle Ollama local pour la partie conversation
-- une interface web de test
+- une API Python pour les actions réelles (Gmail + Google Calendar + alarmes locales + pilotage du poste)
+- un modèle Ollama local pour la conversation
+- une voix 100 % locale : reconnaissance Whisper et synthèse neuronale Piper
+- un HUD web servi par l'API
 - un pipeline de fine-tuning MLX pour personnaliser le modèle
 - un prompt système partagé entre entraînement et inférence
 
+Rien ne quitte ta machine, à part les appels que tu demandes (Google, météo).
+
 ## Sommaire
 
-- [Prérequis](#prerequis)
-- [Choisir ton parcours](#choisir-ton-parcours)
-- [Installation automatique (run_jarvissh)](#installation-automatique-run_jarvissh)
-- [Installation manuelle](#installation-manuelle)
-- [Installation du portage Discord](#suite--installation-du-portage-discord)
+- [Prérequis](#prérequis)
+- [Démarrage rapide](#démarrage-rapide)
+- [Parler à Jarvis](#parler-à-jarvis)
+- [Ce que Jarvis sait faire](#ce-que-jarvis-sait-faire)
+- [Commandes de run_jarvis.sh](#commandes-de-run_jarvissh)
+- [Configuration (.env)](#configuration-env)
 - [Configuration Google (Gmail + Calendar)](#configuration-google-gmail--calendar)
+- [Installation du portage Discord](#installation-du-portage-discord)
+- [Sécurité](#sécurité)
+- [Entraîner ton propre modèle](#entraîner-ton-propre-modèle)
 - [Prompt système partagé](#prompt-système-partagé)
 - [Organisation de l'API](#organisation-de-lapi)
-- [Commandes slash (interface)](#commandes-slash-interface)
-- [Requêtes naturelles utiles](#requêtes-naturelles-utiles)
-- [Fine-tuning modèle](#fine-tuning-modèle-explications)
+- [Tests](#tests)
 - [Arborescence du projet](#arborescence-du-projet)
 
 ## Prérequis
 
-- macOS puce AppleSilicon (uniquement pour l'entraînement MLX, sinon utilisable sur n'importe quel OS)
 - Python 3.9+
-- Ollama installé
-- git
-- cmake
+- Ollama installé (version 0.30.9 ou plus récente pour le modèle par défaut)
+- un navigateur récent (Chrome, Arc, Edge, Safari) et un micro
+- pour l'entraînement uniquement : macOS Apple Silicon, git, cmake
 
-Si tu n'es pas sur macOS avec une puce Apple Silicon, retire d'abord la dépendance `mlx-lm` du fichier `requirements.txt`.
+Le pilotage du poste (applications, volume, veille) est complet sur macOS, partiel sur Linux et Windows.
 
-## Choisir ton parcours
+## Démarrage rapide
 
-Tu as 2 façons d'utiliser le projet:
-
-### Option A - Entraîner le modèle de A à Z
-
-Utilise ce mode si tu veux reproduire tout le pipeline:
-
-- entraînement MLX (`train.py`)
-- conversion et quantification GGUF (`convert_to_gguf.sh`)
-- création du modèle Ollama local (`jarvis`)
-
-Commandes rapides:
+Aucun entraînement n'est nécessaire : Jarvis s'appuie sur un modèle de la bibliothèque Ollama, habillé de son prompt système.
 
 ```bash
-python3 -m venv .venv
-./run_jarvis.sh setup
-./run_jarvis.sh all
-./run_jarvis.sh api
-./run_jarvis.sh web
+python3 -m venv .venv          # il faut un env, même vide
+./run_jarvis.sh setup          # dépendances + voix (Piper) + reconnaissance (Whisper)
+./run_jarvis.sh create         # crée le modèle Ollama "jarvis"
+./run_jarvis.sh start          # lance Jarvis et ouvre le HUD
 ```
 
-### Option B - Démarrage rapide avec GGUF déjà prêt (Drive)
+Le HUD s'ouvre sur `http://localhost:8001/`. Clique sur **Initialiser**, autorise le micro, et Jarvis t'accueille : « Bonjour, Monsieur. Il est 7 heures… ».
 
-Si tu ne veux pas entraîner, télécharge directement le fichier GGUF:
+Notes:
 
-- https://drive.google.com/file/d/1beJAhbYAGZROt85Tt_EQ-Xqpj5JKpXj-/view?usp=sharing
+- `setup` télécharge une fois la voix (~60 Mo) et le modèle Whisper (~480 Mo)
+- `create` télécharge une fois le modèle de base (`gemma4:e4b`, ~6,6 Go). Pour en choisir un autre, mets `JARVIS_BASE_MODEL` dans `.env` (par exemple `llama3.1:8b` ou `gemma3:4b`, plus léger)
+- copie `.env.example` en `.env` pour personnaliser (formule d'appel, ville, voix…)
 
-Puis:
+## Parler à Jarvis
 
-1. Place le fichier dans `Jarvis/export/`.
-2. Renomme-le en `jarvis-q4.gguf` (ou adapte la ligne `FROM` dans `Jarvis/Modelfile`).
-3. Crée le modèle Ollama puis lance API + web.
+| Geste | Effet |
+|---|---|
+| Dire « Jarvis, … » | donne un ordre (le prénom peut aussi venir à la fin de la phrase) |
+| Dire « Jarvis » seul | il répond « Monsieur ? » et écoute la suite |
+| Parler juste après sa réponse | pas besoin de redire son prénom pendant une douzaine de secondes |
+| Barre d'espace, ou clic sur le réacteur | le met à l'écoute sans dire son prénom |
+| Échap, ou clic pendant qu'il parle | le fait taire |
+| Écrire dans la barre du bas | tout fonctionne aussi au clavier |
 
-Commandes rapides:
+Les boutons en haut à droite :
 
-```bash
-python3 -m venv .venv
-./run_jarvis.sh setup
-./run_jarvis.sh create
-./run_jarvis.sh api
-./run_jarvis.sh web
+- **Micro** : active ou coupe l'écoute
+- **Voix** : active ou coupe la voix de Jarvis
+- **Continu** : conversation continue, sans mot d'activation (à réserver aux pièces calmes)
+- **Aide** : exemples de phrases et liste des commandes
+
+Le réacteur change de couleur selon l'état : bleu (veille, écoute, réponse), ambre (analyse), rouge (alerte).
+
+Pendant que Jarvis parle ou réfléchit, le micro est ignoré : il ne s'entend pas lui-même.
+
+## Ce que Jarvis sait faire
+
+Conversation:
+
+- `Jarvis, tu es là ?` → « Pour vous, Monsieur, toujours. »
+- `Explique-moi ce qu'est un trou noir`
+- `Je vais déployer en production un vendredi soir`
+
+Informations:
+
+- `Quelle heure est-il ?` · `On est quel jour ?`
+- `Quel temps fait-il ?` · `Quel temps fait-il à Lyon demain ?`
+- `Fais-moi le point` (briefing : heure, météo, agenda, messagerie, alertes)
+
+Poste de travail:
+
+- `Lance un diagnostic` · `Niveau de batterie ?`
+- `Ouvre Safari` · `Ferme la calculette` · `Ouvre github.com`
+- `Monte le volume` · `Volume à 40` · `Coupe le son`
+- `Cherche les dernières news sur l'IA` · `Recherche Iron Man sur YouTube`
+- `Mets l'écran en veille`
+
+Alarmes, minuteurs, rappels:
+
+- `Réveille-moi demain à 7h30`
+- `Minuteur de 10 minutes pour les pâtes` · `Annule le minuteur`
+- `Rappelle-moi à 15h d'appeler Paul`
+- `Quelles sont mes alarmes ?` · `Supprime toutes mes alarmes`
+
+Calendrier:
+
+- `Qu'est-ce que j'ai de prévu demain ?` · `Quels sont mes événements de mardi ?`
+- `Planifie une réunion avec Sophie demain à 10h`
+- `Crée un événement lundi de 14h à 16h pour réunion client`
+- `Suis-je libre cette semaine ?`
+- `Supprime les événements de vendredi`
+
+Mail:
+
+- `Résume mes mails` · `Lis mon dernier mail`
+- `Envoie un mail à client@exemple.com pour lui dire que le devis est prêt`
+- `Envoie un mail à Paul pour lui dire que je serai en retard` (avec un carnet d'adresses, voir plus bas)
+
+Notes:
+
+- avant d'envoyer un mail demandé en langage naturel, Jarvis **montre le message final** (objet et corps rédigés) et demande « Dois-je l'envoyer ? ». Réponds « oui » ou « non »
+- même confirmation avant de supprimer plusieurs événements ou toutes les alarmes
+- les commandes slash (`/sendmail`, `/deleteeventsrange`…) sont explicites et s'exécutent sans confirmation
+- quand tu crées un événement sur un créneau déjà pris, Jarvis le signale
+- un contenu mail inapproprié (insultes/grossièretés explicites) est bloqué localement, y compris les contournements par lettres séparées
+- Jarvis ne prétend jamais avoir fait une action qu'il n'a pas exécutée : s'il lui manque une information, il la demande
+- quand une alarme sonne, Jarvis l'annonce à voix haute dans le HUD ; si le HUD est fermé, l'API parle directement sur les haut-parleurs
+
+### Carnet d'adresses
+
+Dicter une adresse email est pénible. Copie `Jarvis/API/contacts.example.json` en `Jarvis/API/contacts.json` :
+
+```json
+{
+  "Paul": "paul@exemple.com",
+  "Sophie Martin": "sophie.martin@exemple.com"
+}
 ```
 
-Dans cette option, tu peux ignorer `train`, `convert` et `all`.
+Tu peux alors dire « envoie un mail à Paul pour lui dire que… ».
 
-## Installation automatique (run_jarvis.sh)
+### Commandes slash
 
-Cette section détaille surtout le parcours Option A (entraînement complet).
+- `/help`
+- `/mailresume` · `/maillast`
+- `/sendmail "destinataire@domaine.com" "Objet" "Message"`
+- `/eventsweek` · `/availability`
+- `/addevent "Titre" "YYYY-MM-DD HH:MM" "YYYY-MM-DD HH:MM"`
+- `/deleteevent "id"` · `/deleteeventsrange "YYYY-MM-DD" "YYYY-MM-DD"`
+- `/setalarm "YYYY-MM-DD HH:MM" "Titre"` · `/alarms`
+- `/deletealarm "id"` · `/deletealarmsrange "YYYY-MM-DD" "YYYY-MM-DD"` · `/deletealarmsall`
+- `/briefing` · `/status` · `/battery` · `/weather "Ville"` · `/time` · `/date`
+- `/open "Application"` · `/close "Application"` · `/volume 40` · `/search "requête"` · `/sleep`
 
-Le script `run_jarvis.sh` centralise l'installation, le lancement API/web et le pipeline modèle.
+## Commandes de run_jarvis.sh
 
 Depuis la racine du projet:
 
@@ -102,113 +178,96 @@ chmod +x run_jarvis.sh
 ./run_jarvis.sh help
 ```
 
-Commandes principales:
-
-- `setup`: installe les dépendances Python (`pip install -r requirements.txt`)
-- `api`: lance l'API sur `http://localhost:8001`
-- `web`: lance l'interface sur `http://localhost:8000`
+- `setup`: installe les dépendances Python, la voix Piper et le modèle Whisper
+- `start`: lance Jarvis (API + HUD) et ouvre l'interface dans le navigateur
+- `api`: lance l'API seule sur `http://localhost:8001` (elle sert aussi le HUD)
+- `web`: sert le HUD seul sur `http://localhost:8000` (l'API doit tourner à part)
+- `create`: crée/met à jour le modèle Ollama `jarvis` (GGUF fine-tuné s'il existe, sinon modèle de base)
+- `voice`: télécharge seulement les modèles de voix
+- `test`: envoie un prompt de test à Ollama
+- `pytest`: lance les tests automatiques
 - `train`: lance `Jarvis/train.py`
 - `convert`: lance `Jarvis/convert_to_gguf.sh`
-- `create`: génère le Modelfile final puis crée/met à jour le modèle Ollama `jarvis`
-- `test`: envoie un prompt de test à Ollama
 - `all`: enchaîne `train -> convert -> create -> test`
 
-Lancement de Jarvis :
-
-```bash
-python3 -m venv .venv # il faut un env meme vide
-./run_jarvis.sh setup
-./run_jarvis.sh all # si jamais le model n'est pas encore entrainé
-
-# Dès que l'entraînement est fini dans des terminaux différents, on exécute ces commandes :
-./run_jarvis.sh api # Lance l'API
-./run_jarvis.sh web # Lance l'interface
-```
-
-## Installation manuelle
-
-Cette section détaille surtout le parcours Option A (entraînement complet).
-
-### 1) Environnement Python
-
-Depuis la racine du repo:
+### Installation manuelle
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
+pip install -r requirements-voice.txt     # voix locale (facultatif)
 
-### 2) Lancer API + interface
-
-```bash
-# Terminal API
 cd Jarvis/API
-uvicorn main:app --host 0.0.0.0 --port 8001
-
-# Terminal web (autre terminal)
-cd Jarvis/Interface
-python3 -m http.server 8000
+python main.py
 ```
 
-Puis ouvre `http://localhost:8000/test_interface.html`.
+Puis ouvre `http://localhost:8001/`.
 
-### 3) Créer le modèle Ollama avec prompt système
+## Configuration (.env)
 
-Depuis `Jarvis/`:
+Tout est optionnel. Copie `.env.example` en `.env` à la racine et adapte.
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `JARVIS_USER_TITLE` | `Monsieur` | formule d'appel employée par Jarvis (`Madame`, un prénom…) |
+| `JARVIS_CITY` | `Paris` | ville par défaut pour la météo et le briefing |
+| `OLLAMA_URL` | `http://localhost:11434` | adresse d'Ollama |
+| `OLLAMA_MODEL` | `jarvis` | modèle utilisé pour la conversation |
+| `JARVIS_BASE_MODEL` | `gemma4:e4b` | modèle de base utilisé par `create` sans GGUF fine-tuné |
+| `JARVIS_STRICT_ACTIONS_ONLY` | `0` | `1` : Jarvis refuse tout ce qui n'est pas une action (ancien comportement) |
+| `JARVIS_CONFIRM_ACTIONS` | `1` | confirmation avant envoi de mail et suppressions en masse |
+| `JARVIS_TTS_ENGINE` | `auto` | synthèse : `auto`, `piper`, `say` (macOS), `browser`, `off` |
+| `JARVIS_PIPER_VOICE` | `fr_FR-tom-medium` | voix Piper |
+| `JARVIS_TTS_VOICE` | *(auto)* | voix macOS pour le moteur `say` |
+| `JARVIS_TTS_RATE` | `1.0` | débit de la voix |
+| `JARVIS_STT_ENGINE` | `auto` | reconnaissance : `auto`, `whisper`, `browser`, `off` |
+| `JARVIS_WHISPER_MODEL` | `small` | `tiny`, `base`, `small`, `medium` |
+| `JARVIS_WAKE_WORD` | `jarvis` | mot d'activation |
+| `JARVIS_HOST` / `JARVIS_PORT` | `127.0.0.1` / `8001` | adresse d'écoute de l'API |
+| `JARVIS_ALLOWED_ORIGINS` | *(vide)* | origines web supplémentaires autorisées |
+| `JARVIS_REMOTE_SYSTEM_CONTROL` | `0` | `1` : Discord peut piloter le poste |
+| `GOOGLE_FORGET_TOKEN_ON_EXIT` | `1` | `0` : conserve la connexion Google entre deux lancements |
+
+Après avoir changé `JARVIS_USER_TITLE`, relance `./run_jarvis.sh create`.
+
+En mode `auto`, si les moteurs locaux ne sont pas installés, le HUD se rabat sur la voix et la reconnaissance du navigateur. Attention : la reconnaissance du navigateur envoie le son du micro à son éditeur, et ne fonctionne pas dans tous les navigateurs.
+
+## Configuration Google (Gmail + Calendar)
+
+1. Sur Google Cloud Console (https://console.cloud.google.com/):
+- crée un projet
+- dans API et Services active `Gmail API` et `Google Calendar API`
+- configure l'écran de consentement OAuth (External)
+- ajoute ton compte dans `Test users` dans l'onglet Audience
+- crée un OAuth client `Desktop app` dans l'onglet Client
+2. Télécharge le JSON client OAuth (secret client)
+3. Mets à jour `.env`:
 
 ```bash
-cd Jarvis
-awk -v prompt_file="system_prompt.txt" '
-    BEGIN {
-        in_system = 0
-        inserted = 0
-    }
+GOOGLE_CLIENT_SECRET_FILE=/chemin/vers/Jarvis/API/le-json-client-de-OAuth.json
+GOOGLE_TOKEN_FILE=/chemin/vers/Jarvis/API/.google-token.json
+GOOGLE_CALENDAR_ID=primary
+GOOGLE_TIMEZONE=Europe/Paris
 
-    /^[[:space:]]*SYSTEM[[:space:]]+"""/ {
-        in_system = 1
-        next
-    }
-
-    in_system {
-        if ($0 ~ /"""/) {
-            in_system = 0
-        }
-        next
-    }
-
-    {
-        print $0
-        if (!inserted && $1 == "FROM") {
-            print ""
-            print "SYSTEM \"\"\""
-            while ((getline line < prompt_file) > 0) {
-                print line
-            }
-            close(prompt_file)
-            print "\"\"\""
-            inserted = 1
-        }
-    }
-
-    END {
-        if (!inserted) {
-            print ""
-            print "SYSTEM \"\"\""
-            while ((getline line < prompt_file) > 0) {
-                print line
-            }
-            close(prompt_file)
-            print "\"\"\""
-        }
-    }
-' Modelfile > .Modelfile.generated
-
-ollama create jarvis -f .Modelfile.generated
-ollama run jarvis
+# Alarmes locales (notification native + son selon l'OS)
+ALARMS_FILE=/chemin/vers/Jarvis/API/.alarms.json
+ALARM_NOTIFICATION_ENABLED=1
+ALARM_SOUND_ENABLED=1
+ALARM_SOUND_REPEAT=1 # Nombre de répétitions (1 à 10)
+ALARM_SOUND_FILE= # Chemin complet vers un fichier son. Laisser vide pour le carillon du système.
 ```
 
-## Suite : Installation du portage Discord
+Dans le HUD, panneau **Liaisons**:
+
+- clique sur `Connecter` pour lancer le consentement Google
+- clique sur `Déconnecter` pour révoquer et supprimer le token
+
+Par défaut, le token local est supprimé quand l'API s'arrête (`GOOGLE_FORGET_TOKEN_ON_EXIT=0` pour le conserver).
+
+Sans Google, tout le reste fonctionne : conversation, météo, alarmes, pilotage du poste.
+
+## Installation du portage Discord
 
 ### 1) Configurer les variables d'environnement
 
@@ -223,7 +282,7 @@ Notes importantes:
 
 - `DISCORD_TOKEN` est obligatoire
 - `JARVIS_API_URL` doit pointer vers l'API Jarvis (`:8001/api/chat`) et pas vers Ollama (`:11434`)
-- ne commit jamais `.env` dans git
+- ne commit jamais `.env` dans git (le `.gitignore` l'exclut)
 
 ### 2) Configurer le bot sur Discord Developer Portal
 
@@ -251,116 +310,31 @@ Jarvis est pret: <nom_du_bot>
 
 ### 4) Connexion API/Google
 
-Pour les actions mail/calendrier depuis Discord, connecte d'abord Google via l'interface web Jarvis (`Connecter`).
+Pour les actions mail/calendrier depuis Discord, connecte d'abord Google avec la commande `/google` ou depuis le HUD.
 
-## Configuration Google (Gmail + Calendar)
+Depuis Discord, Jarvis converse et gère mails, agenda et alarmes, avec les mêmes confirmations. Il refuse en revanche de piloter ton ordinateur (applications, volume, veille), sauf si tu mets `JARVIS_REMOTE_SYSTEM_CONTROL=1`.
 
-1. Sur Google Cloud Console (https://console.cloud.google.com/):
-- crée un projet
-- dans API et Services active `Gmail API` et `Google Calendar API`
-- configure l'écran de consentement OAuth (External)
-- ajoute ton compte dans `Test users` dans l'onglet Audience
-- crée un OAuth client `Desktop app` dans l'onglet Client
-2. Télécharge le JSON client OAuth (secret client)
-3. Mets à jour `.env`:
+## Sécurité
+
+Jarvis envoie des mails en ton nom et agit sur ton ordinateur : l'API est donc verrouillée par défaut.
+
+- elle n'écoute que sur `127.0.0.1` : elle n'est pas joignable depuis le réseau
+- seules les pages servies depuis `localhost` peuvent l'appeler : un site web quelconque ouvert dans ton navigateur ne peut pas faire agir Jarvis
+- les requêtes adressées à un autre nom d'hôte sont refusées (protection contre le DNS rebinding)
+- les commandes système ne passent jamais par un shell, et les noms d'applications et adresses web sont validés
+- `.env`, le secret client Google, le token et le carnet d'adresses sont exclus de git
+
+Pour ouvrir Jarvis à ton réseau local, en connaissance de cause : `JARVIS_HOST=0.0.0.0` et `JARVIS_ALLOWED_ORIGINS=http://ton-ip:8001`. Le micro du navigateur exige alors HTTPS ou `localhost`.
+
+## Entraîner ton propre modèle
+
+Facultatif : le fine-tuning ancre la personnalité de Jarvis dans le modèle lui-même (macOS Apple Silicon).
 
 ```bash
-GOOGLE_CLIENT_SECRET_FILE=/chemin/vers/Jarvis/API/le-json-client-de-OAuth.json
-GOOGLE_TOKEN_FILE=/chemin/vers/Jarvis/API/.google-token.json
-GOOGLE_CALENDAR_ID=primary
-GOOGLE_TIMEZONE=Europe/Paris
-
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=jarvis
-JARVIS_STRICT_ACTIONS_ONLY=1 # 1 par défaut: refuse les questions hors mail/calendrier/alarmes
-
-# Alarmes locales (notification native + son selon l'OS)
-ALARMS_FILE=/chemin/vers/Jarvis/API/.alarms.json
-ALARM_NOTIFICATION_ENABLED=1
-ALARM_SOUND_ENABLED=1
-ALARM_SOUND_REPEAT=1 # Nombre de répétitions (1 à 10)
-ALARM_SOUND_FILE= # Chemin complet vers un fichier son (ex: /System/Library/Sounds/Glass.aiff). Laisser vide pour utiliser le son par défaut de l'OS.
+./run_jarvis.sh all      # train -> convert -> create -> test
 ```
 
-Dans l'interface web:
-
-- clique sur `Connecter` pour lancer le consentement Google
-- clique sur `Deconnecter` pour révoquer et supprimer le token
-
-Le token local est supprimé automatiquement quand l'API s'arrete.
-
-## Prompt système partagé
-
-Source de vérité:
-
-- `Jarvis/system_prompt.txt`
-
-Utilise par:
-
-- l'API (`Jarvis/API/main.py`)
-- le train (`Jarvis/train.py`)
-- la création du modèle Ollama (via `.Modelfile.generated`)
-
-## Organisation de l'API
-
-Le backend API est découplé par domaine:
-
-- `Jarvis/API/main.py`: orchestration FastAPI (routes + dispatch)
-- `Jarvis/API/intents.py`: parsing commandes slash + intentions naturelles
-- `Jarvis/API/mail_actions.py`: logique emails (lecture, envoi, génération)
-- `Jarvis/API/calendar_actions.py`: logique calendrier (liste, disponibilités, CRUD)
-- `Jarvis/API/alarm_actions.py`: logique alarmes (scheduler, notification, son)
-
-Ce découpage facilite la maintenance et limite les régressions croisées.
-
-## Commandes slash (interface)
-
-- `/help`
-- `/mailresume`
-- `/maillast`
-- `/sendmail "destinataire@domaine.com" "Objet" "Message"`
-- `/eventsweek`
-- `/availability`
-- `/addevent "Titre" "YYYY-MM-DD HH:MM" "YYYY-MM-DD HH:MM"`
-- `/deleteevent "id"`
-- `/deleteeventsrange "YYYY-MM-DD" "YYYY-MM-DD"`
-- `/setalarm "YYYY-MM-DD HH:MM" "Titre"`
-- `/alarms`
-- `/deletealarm "id"`
-- `/deletealarmsrange "YYYY-MM-DD" "YYYY-MM-DD"`
-- `/deletealarmsall`
-
-## Requêtes naturelles utiles
-
-Calendrier:
-
-- `Quels sont mes événements de mardi ?`
-- `Montre mes événements de demain`
-- `Supprime les événements de vendredi`
-
-Mail:
-
-- `Envoie un mail à client@exemple.com, objet Devis, message Bonjour`
-- `Écris un mail à ... et dis-lui que ...`
-- `Envoi un mail à ... pour lui dire qu'il est beau`
-- `Envoi un mail à ... pour l'école et lui dire qu'il faut aller en cours`
-- `message Bonjour, je confirme le rendez-vous` (si l'adresse est déjà connue dans l'échange)
-
-Notes:
-
-- les commandes mail/calendrier utilisent Google
-- les alarmes sont locales (JSON persistant côté API)
-- si le message est manquant, Jarvis demande une précision au lieu d'envoyer un mail générique
-- l'objet auto-généré est limité à 1-2 mots maximum, en lien avec la demande
-- en mode amélioration (`auto_polish`), Jarvis évite de renvoyer le brouillon brut tel quel et applique un format d'email si nécessaire
-- un contenu mail inapproprié (insultes/grossièretés explicites) est bloqué localement et n'est pas envoyé
-- les contournements par séparation de lettres (`z i z i`, `sui ci der`, etc.) sont également détectés et bloqués
-- si l'utilisateur écrit `help`, `aide` ou `commandes`, Jarvis renvoie la liste des commandes disponibles
-- si l'utilisateur demande `que peux-tu faire` (ou équivalent), Jarvis renvoie un résumé court des capacités
-- si aucune action métier n'est détectée et qu'il ne s'agit pas d'une demande d'aide/capacités, Jarvis refuse la demande hors périmètre au lieu d'interroger Ollama
-- au déclenchement d'une alarme, Jarvis tente notification native + son (macOS, Windows, Linux) avec fallback si commande système manquante
-
-## Fine-tuning modèle explications
+ou étape par étape:
 
 ```bash
 # 1) entraînement
@@ -370,8 +344,8 @@ python train.py
 # 2) conversion GGUF
 bash convert_to_gguf.sh
 
-# 3) création du modèle Ollama
-ollama create jarvis -f .Modelfile.generated
+# 3) création du modèle Ollama (depuis la racine)
+./run_jarvis.sh create
 
 # 4) test
 ollama run jarvis
@@ -379,8 +353,11 @@ ollama run jarvis
 
 Notes:
 
-- `train` utilise `Jarvis/conversations.jsonl`
-- la conversion GGUF utilise `Jarvis/convert_to_gguf.sh`
+- `train` utilise `Jarvis/conversations.jsonl` : une centaine d'échanges dans le ton de Jarvis (vouvoiement, flegme, réponses courtes faites pour être dites, refus de prétendre avoir agi)
+- le jeu de données est écrit avec « Monsieur » ; `train.py` y inscrit ta formule d'appel (`JARVIS_USER_TITLE`)
+- les exemples sont fournis à MLX au format « chat » : c'est le gabarit de conversation du modèle qui est appliqué, le même qu'à l'inférence
+- `JARVIS_TRAIN_MODEL` et `JARVIS_TRAIN_ITERS` permettent un essai rapide avec un petit modèle
+- dès que `Jarvis/export/jarvis-q4.gguf` existe, `create` l'utilise à la place du modèle de base
 - au premier lancement, `convert_to_gguf.sh` clone/build `llama.cpp` dans `Jarvis/.tools/llama.cpp`
 - le script de conversion déquantise automatiquement `Jarvis/jarvis-fused` en FP16 avant conversion GGUF
 - si `torch` est manquant, il est installé automatiquement dans le venv
@@ -391,14 +368,68 @@ Sorties de train (si lancé depuis `Jarvis/`):
 - `Jarvis/jarvis-mlx/`
 - `Jarvis/jarvis-fused/`
 
+### Ancien modèle pré-entraîné
+
+Le GGUF partagé sur Drive a été entraîné avec l'ancienne personnalité de Jarvis (tutoiement, refus de toute conversation hors mail/agenda/alarmes) :
+
+- https://drive.google.com/file/d/1beJAhbYAGZROt85Tt_EQ-Xqpj5JKpXj-/view?usp=sharing
+
+Il reste utilisable (place-le dans `Jarvis/export/jarvis-q4.gguf` puis `./run_jarvis.sh create`), mais il ne correspond plus au personnage : préfère le modèle de base, ou relance un entraînement.
+
+## Prompt système partagé
+
+Source de vérité:
+
+- `Jarvis/system_prompt.txt`
+
+Utilisé par:
+
+- l'API (`Jarvis/API/llm.py`), qui y ajoute le contexte en direct (date, heure, et selon la question : agenda, météo, état du poste)
+- le train (`Jarvis/train.py`)
+- la création du modèle Ollama (via `.Modelfile.generated`)
+
+Le marqueur `{titre}` y est remplacé par `JARVIS_USER_TITLE`.
+
+## Organisation de l'API
+
+Le backend est découpé par domaine:
+
+- `Jarvis/API/main.py`: orchestration FastAPI (routes, confirmations, dispatch)
+- `Jarvis/API/config.py`: lecture du `.env` et réglages
+- `Jarvis/API/persona.py`: ton de Jarvis, dates en français, version orale des réponses
+- `Jarvis/API/intents.py`: parsing commandes slash + intentions naturelles
+- `Jarvis/API/llm.py`: client Ollama (conversation en flux, garde-fous)
+- `Jarvis/API/voice.py`: synthèse (Piper / say) et reconnaissance (Whisper), mot d'activation
+- `Jarvis/API/briefing.py`: tableau de bord du HUD, briefing, contexte en direct
+- `Jarvis/API/system_actions.py`: diagnostic, applications, volume, web, veille
+- `Jarvis/API/weather.py`: météo (Open-Meteo, sans clé)
+- `Jarvis/API/events.py`: événements proactifs (alarmes annoncées par le HUD)
+- `Jarvis/API/mail_actions.py`: logique emails (lecture, envoi, génération)
+- `Jarvis/API/calendar_actions.py`: logique calendrier (liste, disponibilités, CRUD, conflits)
+- `Jarvis/API/alarm_actions.py`: logique alarmes (scheduler, notification, son, annonce)
+
+Le détail de chaque fichier est dans [Jarvis/API/README.md](Jarvis/API/README.md).
+
+## Tests
+
+```bash
+./run_jarvis.sh pytest
+```
+
+Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (commandes système simulées), la voix et l'API de bout en bout avec un faux compte Google. Ils ne touchent ni à ta messagerie, ni à ton agenda, ni à ton ordinateur.
+
 ## Arborescence du projet
 
 ```text
 .
 ├── README.md
-├── requirements.txt
+├── requirements.txt            # API, Google, Discord
+├── requirements-voice.txt      # voix locale (Whisper + Piper)
+├── requirements-train.txt      # fine-tuning MLX
+├── requirements-dev.txt        # tests
 ├── run_jarvis.sh
-├── .env
+├── .env.example
+├── .env                        # à créer (non versionné)
 ├── Discord/
 │   └── main.py
 ├── Marketing/
@@ -406,6 +437,7 @@ Sorties de train (si lancé depuis `Jarvis/`):
 ├── Page/
 │   ├── index.html
 │   └── style.css
+├── tests/
 └── Jarvis/
     ├── README.md
     ├── Modelfile
@@ -416,18 +448,32 @@ Sorties de train (si lancé depuis `Jarvis/`):
     ├── API/
     │   ├── README.md
     │   ├── main.py
+    │   ├── config.py
+    │   ├── persona.py
     │   ├── intents.py
+    │   ├── llm.py
+    │   ├── voice.py
+    │   ├── briefing.py
+    │   ├── system_actions.py
+    │   ├── weather.py
+    │   ├── events.py
     │   ├── mail_actions.py
     │   ├── calendar_actions.py
     │   ├── alarm_actions.py
     │   ├── alarms.py
     │   ├── google_client.py
     │   ├── google_auth_setup.py
+    │   ├── contacts.example.json
+    │   ├── contacts.json           # à créer (non versionné)
     │   ├── google-client-secret.json
-    │   ├── .google-token.json # Génèré automatiquement lors de la connexion
-    │   └── .alarms.json # Génèré automatiquement lors de la visite de l'interface
+    │   ├── voices/                 # voix Piper, téléchargée par setup
+    │   ├── .google-token.json      # généré lors de la connexion
+    │   └── .alarms.json            # généré au premier lancement
     └── Interface/
-        ├── test_interface.html
-        ├── test_interface.js
-        └── test_interface.css
+        ├── index.html              # le HUD
+        ├── hud.css
+        ├── hud.js                  # dialogue, panneaux, démarrage
+        ├── core.js                 # réacteur animé
+        ├── voice.js                # micro, détection de parole, lecture de la voix
+        └── mic-worklet.js
 ```

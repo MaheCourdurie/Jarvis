@@ -23,7 +23,9 @@ Le dossier `Discord/` contient l'adaptateur Discord de Jarvis:
 - Inclut une commande slash : `/jarvis_status` pour voir si l'API est en ligne.
 - Inclut une commande slash : `/google` pour lancer la connexion Google comme sur le web (création du token OAuth côté API).
 - Inclut une commande slash : `/description` pour renvoyer la phrase "que peux-tu faire" de l'API web.
-- Remplace automatiquement l'erreur provider Google non configuré par un message utilisateur clair: `Google pas connecte. Veuillez faire la connexion avec la commande /google.`
+- Quand l'API signale que Google n'est pas relié, affiche un message clair: `La liaison Google n'est pas établie. Lancez la commande /google pour connecter votre compte.`
+- Gère les confirmations de Jarvis : avant d'envoyer un mail ou de supprimer en masse, Jarvis demande « Dois-je l'envoyer ? » et le bot transmet votre « oui » ou « non » au message suivant.
+- Se présente à l'API comme client distant : Jarvis converse et gère mails, agenda et alarmes depuis Discord, mais ne pilote pas l'ordinateur (applications, volume, veille), sauf `JARVIS_REMOTE_SYSTEM_CONTROL=1` côté API.
 
 ## Vue d'ensemble des fichiers
 
@@ -46,6 +48,8 @@ Le dossier `Discord/` contient l'adaptateur Discord de Jarvis:
 | `DEFAULT_JARVIS_API_URL` | `http://127.0.0.1:8001/api/chat` | valeur de secours pour `JARVIS_API_URL` |
 | `MAX_HISTORY` | `20` | taille max de l'historique conversationnel par utilisateur |
 | `conversations` | `dict[int, list[dict[str, str]]]` | stockage memoire des echanges par utilisateur Discord |
+| `pending_actions` | `dict[int, dict]` | action proposee par Jarvis et en attente de confirmation, par utilisateur Discord |
+| `GOOGLE_REQUIRED_REPLY` | texte | message affiche quand Google n'est pas relie |
 
 
 ## Utilisation
@@ -73,8 +77,7 @@ Fichier principal: `Discord/main.py`
 | `get_status_url(chat_url)` | `chat_url` | `chat_url`: endpoint chat (`/api/chat`) | derive l'URL de status (`/api/status`) |
 | `get_google_connect_url(chat_url)` | `chat_url` | `chat_url`: endpoint chat (`/api/chat`) | derive l'URL de connexion Google (`/api/google/connect`) |
 | `trim_history(history)` | `history` | `history`: liste des messages deja stockes | conserve uniquement les `MAX_HISTORY` derniers messages |
-| `normalize_api_reply(reply)` | `reply` | `reply`: reponse brute de l'API Jarvis | remplace certains messages provider Google par un message guidant vers `/google` |
-| `ask_jarvis(history, message)` | `history`, `message` | `history`: contexte conversationnel; `message`: texte utilisateur | envoie la requete HTTP a Jarvis (`requests.post`), puis normalise le message de reponse |
+| `ask_jarvis(history, message, user_id=None)` | `history`, `message`, `user_id` | `history`: contexte conversationnel; `message`: texte utilisateur; `user_id`: auteur Discord, pour suivre sa confirmation en attente | envoie la requete HTTP a Jarvis (`requests.post`) avec `client: "discord"` et l'action en attente, memorise la nouvelle confirmation demandee, et remplace la reponse par `GOOGLE_REQUIRED_REPLY` si l'API indique `data.google_required` |
 | `send_long_message(channel, text)` | `channel`, `text` | `channel`: canal Discord cible; `text`: reponse a envoyer | decoupe le texte en morceaux de 2000 caracteres max et envoie chaque bloc |
 
 ### Handlers Discord et commande slash
@@ -112,7 +115,9 @@ Corps de requete attendu :
 {
   "message": "texte utilisateur",
   "history": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}],
-  "temperature": 0.3
+  "temperature": 0.6,
+  "client": "discord",
+  "pending": null
 }
 ```
 
@@ -120,9 +125,14 @@ Corps de réponse attendu :
 
 ```json
 {
-  "reply": "texte de réponse du bot"
+  "reply": "texte de réponse du bot",
+  "pending": null,
+  "data": null
 }
 ```
+
+- `pending` : présent quand Jarvis attend une confirmation ; le bot le renvoie tel quel avec le message suivant de l'utilisateur.
+- `data.google_required` : vrai quand l'action demande un compte Google qui n'est pas relié.
 
 La commande `/jarvis_status` vérifie `JARVIS_API_URL` en remplacent `/api/chat` par `/api/status`.
 
@@ -130,9 +140,9 @@ La commande `/google` utilise `POST /api/google/connect` pour demarrer OAuth Goo
 
 La commande `/description` appelle le meme endpoint chat (`/api/chat`) avec le message `que peux tu faire`.
 
-Quand l'API repond avec une erreur Google de type compte non configure (`GOOGLE_TOKEN_FILE` manquant), le bot affiche a la place:
+Quand l'API repond que Google n'est pas relie (`data.google_required`), le bot affiche a la place:
 
-`Google pas connecte. Veuillez faire la connexion avec la commande /google.`
+`La liaison Google n'est pas établie. Lancez la commande /google pour connecter votre compte.`
 
 ## Dépannage
 
@@ -147,11 +157,13 @@ Quand l'API repond avec une erreur Google de type compte non configure (`GOOGLE_
   - Vérifiez que l'API Jarvis est lancée
   - Vérifiez la configuration Google côté API (`GOOGLE_CLIENT_SECRET_FILE`)
   - Vérifiez que le consentement OAuth peut s'ouvrir sur la machine qui exécute l'API
-- **Message `Google pas connecte...` pendant une commande mail/calendrier**
+- **Message `La liaison Google n'est pas établie...` pendant une commande mail/calendrier**
   - Lancez la commande `/google` depuis Discord pour créer le token OAuth
   - Puis relancez votre commande (`/mailresume`, etc.)
 - **`/description` échoue**
   - Vérifiez que le modèle et l'API Jarvis sont en ligne (testez d'abord `/jarvis_status`)
+- **Jarvis refuse d'ouvrir une application ou de régler le volume**
+  - C'est voulu : depuis Discord, il ne pilote pas l'ordinateur. Pour l'autoriser, mettez `JARVIS_REMOTE_SYSTEM_CONTROL=1` dans le `.env` de l'API
 - **Aucune réponse lors d'une mention**
   - Vérifiez que vous mentionnez explicitement le bot
   - Vérifiez que le message ne commence pas par `/` (les commandes slash sont géré à part)

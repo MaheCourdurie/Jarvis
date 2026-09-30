@@ -1,0 +1,3 @@
+# Tests (./run_jarvis.sh pytest)
+pytest
+httpx

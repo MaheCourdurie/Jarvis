@@ -4,237 +4,351 @@
 
 Ce dossier regroupe la logique serveur de Jarvis:
 
-- l'API FastAPI
+- l'API FastAPI, qui sert aussi le HUD
 - le routage des intentions
-- la logique metier des mails
-- la logique metier du calendrier
-- la logique metier des alarmes
+- la persona (ton, dates en français, version orale des réponses)
+- le client du modèle de langage (Ollama)
+- la voix (synthèse et reconnaissance locales)
+- la logique métier des mails, du calendrier et des alarmes
+- le pilotage du poste (diagnostic, applications, volume, web, veille)
+- la météo, le briefing et le tableau de bord du HUD
 - le client Google OAuth / Gmail / Calendar
 - le stockage persistant des alarmes
+
+## Parcours d'une demande
+
+```text
+HUD (voix ou clavier) ──► POST /api/chat/stream
+                              │
+                              ├─ 1. réponse à une confirmation en attente ? (« oui » / « non »)
+                              ├─ 2. intention reconnue ? (intents.py) ──► module métier ──► Reply
+                              ├─ 3. demande d'aide ? (commandes / capacités)
+                              └─ 4. sinon : conversation ──► llm.py ──► Ollama (phrases en flux)
+```
+
+Chaque module métier renvoie un objet `Reply` :
+
+- `text` : ce que le HUD affiche (listes, identifiants, liens)
+- `speech` : ce que Jarvis prononce (court, sans identifiants ni symboles)
+- `data` : données structurées pour le HUD
+- `pending` : action en attente d'une confirmation (`{"action": ..., "params": ...}`)
+
+Le modèle de langage ne déclenche jamais d'action : il ne sert qu'à converser et à rédiger les mails. Les actions sont exécutées par le code, de façon déterministe.
+
+## Routes HTTP
+
+| Route | Méthode | Rôle |
+|---|---|---|
+| `/` | GET | sert le HUD (`Jarvis/Interface/`) |
+| `/api/status` | GET | état global : modèle, voix, Google, persona |
+| `/api/chat` | POST | demande → réponse complète (utilisée par Discord) |
+| `/api/chat/stream` | POST | même chose en flux NDJSON, phrase par phrase (utilisée par le HUD) |
+| `/api/tts` | POST | texte → voix de Jarvis (WAV) |
+| `/api/stt` | POST | enregistrement du micro (WAV 16 bits) → texte + mot d'activation |
+| `/api/system` | GET | relevé du poste : processeur, mémoire, disque, batterie, alertes |
+| `/api/dashboard` | GET | météo, agenda du jour, messages non lus, alarmes |
+| `/api/briefing` | GET | briefing prononcé par Jarvis (`kind=boot` ou `kind=full`) |
+| `/api/events` | GET | événements proactifs (alarmes) depuis le dernier relevé |
+| `/api/alarms` | GET | alarmes actives |
+| `/api/commands` | GET | aide des commandes |
+| `/api/google/connect` | POST | lance le flux OAuth Google |
+| `/api/google/disconnect` | POST | révoque et supprime le token Google |
+
+Corps de `/api/chat` et `/api/chat/stream` :
+
+```json
+{
+  "message": "Envoie un mail à Paul pour lui dire que je serai en retard",
+  "history": [{"role": "user", "content": "..."}],
+  "pending": null,
+  "client": "hud"
+}
+```
+
+Réponse (`/api/chat`, ou événement `final` du flux) :
+
+```json
+{
+  "reply": "J'ai préparé ce message pour Paul, Monsieur : ...",
+  "speech": "J'ai préparé le message pour Paul, Monsieur. ... Dois-je l'envoyer ?",
+  "action": "send_mail",
+  "source": "google",
+  "pending": {"action": "send_mail", "params": {"to_email": "...", "subject": "...", "body": "..."}},
+  "data": null
+}
+```
+
+Le client renvoie `pending` tel quel avec le message suivant : « oui » exécute l'action, « non » l'annule, toute autre phrase l'abandonne.
+
+Événements du flux : `{"type": "start"}`, puis `{"type": "sentence", "text": "..."}` pour chaque phrase du modèle, puis `{"type": "final", ...}`. Une action reconnue ne produit qu'un événement `final`.
 
 ## Vue d'ensemble des fichiers
 
 ### `main.py`
-- **Role**: point d'entree de l'API FastAPI.
-- **Responsabilite**: expose les routes HTTP, orchestre les appels vers Ollama, Google, les alarmes et les modules metier.
+- **Role**: point d'entrée de l'API FastAPI.
+- **Responsabilite**: expose les routes, gère les confirmations, applique les règles de sécurité, délègue aux modules.
 
-#### Classes
-
-| Classe | Role |
+| Élément | Rôle |
 |---|---|
-| `HistoryMessage` | message d'historique avec `role` et `content` |
-| `ChatRequest` | requete principale du chat (`message`, `history`, `temperature`) |
-| `ChatResponse` | reponse de l'API (`reply`, `action`, `source`) |
+| `HistoryMessage`, `ChatRequest`, `ChatResponse`, `SpeakRequest` | modèles des requêtes et réponses |
+| `lifespan(app)` | démarre le scheduler d'alarmes, précharge le modèle et la voix ; à l'arrêt, supprime le token Google (sauf `GOOGLE_FORGET_TOKEN_ON_EXIT=0`) |
+| `run_action(action_payload)` | redirige une action vers le bon module et renvoie un `Reply` |
+| `_execute(action_payload)` | exécute l'action et traduit les erreurs Google dans le ton de Jarvis |
+| `resolve(request)` | traite tout ce qui ne demande pas le modèle : confirmation, action, aide, mode strict, modèle hors ligne |
+| `classify_support_request(text)` | détecte « aide » / « commandes » et « que peux-tu faire » |
+| `_chat_events(request)` | produit le flux NDJSON de `/api/chat/stream` |
+| `_allowed_hosts()` | noms d'hôte acceptés par l'API |
 
-#### Fonctions
+Règles appliquées:
 
-| Fonction | Paramètres | Rôle des paramètres | Rôle |
-|---|---|---|---|
-| `load_system_prompt()` | aucun | aucun | charge `system_prompt.txt` ou renvoie un prompt par defaut |
-| `ollama_status()` | aucun | aucun | verifie si Ollama repond et si le modele est disponible |
-| `call_ollama(history, message, temperature)` | `history`, `message`, `temperature` | `history`: historique de conversation, `message`: message courant, `temperature`: niveau de creativite | appelle l'instance Ollama locale sur `http://localhost:11434` avec le modele `jarvis` |
-| `run_action(action_payload)` | `action_payload` | `action_payload`: dictionnaire contenant l'action detectee et ses parametres | redirige vers les handlers mail/calendrier/alarmes |
-| `classify_support_request(text)` | `text` | `text`: message utilisateur brut | detecte les demandes de support (`help`/`commandes`) et de capacites (`que peux-tu faire`) |
-| `api_status()` | aucun | aucun | retourne l'etat global API / Ollama / provider mail |
-| `api_commands()` | aucun | aucun | expose l'aide des commandes |
-| `api_google_connect()` | aucun | aucun | lance le flux OAuth Google |
-| `api_google_disconnect()` | aucun | aucun | revoque et supprime le token local Google |
-| `api_alarms()` | aucun | aucun | retourne la liste des alarmes actives |
-| `api_chat(request)` | `request` | `request`: corps de requete contenant le message, l'historique et la temperature | point d'entree principal: detecte une intention, puis gere les demandes support, puis applique le fallback strict/permissif |
+- les actions Google sont refusées poliment tant que le compte n'est pas relié (aucun brouillon n'est rédigé pour rien)
+- les actions de pilotage du poste (`SYSTEM_CONTROL_ACTIONS`) sont refusées aux clients distants (`client: "discord"`) sauf `JARVIS_REMOTE_SYSTEM_CONTROL=1`
+- `JARVIS_CONFIRM_ACTIONS=0` désactive les confirmations
+- `JARVIS_STRICT_ACTIONS_ONLY=1` refuse toute demande qui n'est pas une action
+- si le modèle est hors ligne, les modules (agenda, mail, alarmes, poste) restent disponibles
+- CORS limité à `localhost` (+ `JARVIS_ALLOWED_ORIGINS`) et en-tête `Host` vérifié
 
-Configuration associee:
+### `config.py`
+- **Role**: configuration centralisée.
+- **Responsabilite**: charge le `.env` avant toute lecture de variable, expose les réglages (`USER_TITLE`, `CITY`, `OLLAMA_MODEL`, `TTS_ENGINE`, `STT_ENGINE`, `HOST`, `PORT`, `ALARM_*`…).
 
-- `JARVIS_STRICT_ACTIONS_ONLY=1` (par defaut): refuse les demandes hors mail/calendrier/alarmes et n'appelle pas Ollama
-- `JARVIS_STRICT_ACTIONS_ONLY=0`: comportement permissif, fallback conversationnel via Ollama si aucune action n'est detectee
-- les messages `help`/`aide`/`commandes` renvoient `COMMAND_HELP` meme sans action metier detectee
-- les messages `que peux-tu faire` (ou variantes) renvoient un resume de capacites (`CAPABILITIES_REPLY`)
-- ces deux routes de support sont traitees avant le refus hors perimetre (mode strict) et avant l'appel Ollama (mode permissif)
+| Fonction | Rôle |
+|---|---|
+| `env_str`, `env_flag`, `env_int`, `env_float`, `env_list` | lecture typée et bornée d'une variable d'environnement |
+
+Tous les modules lisent leur configuration ici : lire `os.getenv` à l'import d'un autre module ferait ignorer le `.env`.
+
+### `persona.py`
+- **Role**: le caractère de Jarvis.
+- **Responsabilite**: formule d'appel, tournures, dates et heures en français, version orale des textes.
+
+| Élément | Rôle |
+|---|---|
+| `Reply` | réponse d'un module (`text`, `speech`, `data`, `pending`) ; `spoken` donne le texte à prononcer |
+| `ack()` | accusé de réception (« Bien, Monsieur. », « Tout de suite, Monsieur. »…) |
+| `greeting(now)` | « Bonjour » ou « Bonsoir » selon l'heure |
+| `format_time`, `spoken_time` | « 7 h 30 » pour l'écran, « 7 heures 30 » / « midi » pour la voix |
+| `format_date`, `day_label`, `format_when`, `spoken_when`, `period_label` | « mardi 30 septembre », « demain à 7 h 30 », « entre le … et le … » |
+| `to_speech(text)` | retire identifiants, liens et markdown d'un texte affiché |
+| `strip_vocative(text)` | retire « Jarvis, … » d'une phrase |
+| `smalltalk_reply(text)` | réponses immédiates aux petites phrases (« tu es là ? » → « Pour vous, Monsieur, toujours. ») |
+| `fold(text)`, `strip_accents(text)` | normalisation pour les détections |
 
 ### `intents.py`
-- **Role**: detection des intentions et parsing des commandes slash ou phrases naturelles.
-- **Responsabilite**: transforme du texte libre en dictionnaires d'actions structurees.
+- **Role**: détection des intentions et parsing des commandes slash ou phrases naturelles.
+- **Responsabilite**: transforme du texte libre en dictionnaires d'actions structurées.
 
-#### Constantes
+| Fonction | Rôle |
+|---|---|
+| `detect_action(text, fallback_email=None)` | entrée principale : essaie chaque parseur et renvoie une action, ou `None` (conversation) |
+| `classify_confirmation(text)` | interprète « oui » / « non » après une demande de confirmation |
+| `_parse_command(text)` | commandes slash (`/sendmail`, `/addevent`, `/status`, `/open`, `/volume`…) |
+| `_parse_natural_send_mail(text, fallback_email)` | envoi de mail : adresse, contact du carnet, objet, message ; demande une précision s'il manque un élément |
+| `_parse_natural_timer(text)` | minuteurs (« minuteur de 10 minutes », « annule le minuteur ») |
+| `_parse_natural_reminder(text)` | rappels (« rappelle-moi à 15h d'appeler Paul ») |
+| `_parse_natural_alarm(text)` | alarmes et réveils : création, liste, suppression |
+| `_parse_natural_calendar(text)` | calendrier : création, liste, disponibilités, suppression |
+| `_parse_mail_reading(text)` | lecture de la messagerie (résumé, dernier mail) |
+| `_parse_info(text)` | heure, date, météo, briefing |
+| `_parse_system(text)` | diagnostic, volume, veille, recherche web, ouverture/fermeture d'applications et de sites |
 
-- `COMMAND_HELP`: texte d'aide des commandes supportees
-- `EMAIL_PATTERN`: regex de detection d'email
-- `WEEKDAY_INDEX`: correspondance jour de semaine -> index Python
+Aides de parsing:
 
-#### Fonctions principales
+| Fonction | Rôle |
+|---|---|
+| `_parse_datetime_expression(text)` | date/heure naturelle (« demain à 7h30 », « lundi prochain », « dans une demi-heure », « ce soir ») |
+| `_normalize_spoken_time(text)` | heures dictées → `7h30` (« 7 heures et demie », « midi », « 9 heures moins le quart ») |
+| `_extract_relative_delay(text)` | durée (« 10 minutes », « 1h30 », « un quart d'heure ») |
+| `_extract_day_period_bounds(text)` | plage de dates (jour, période, semaine) |
+| `_strip_time_expressions(text)` | retire les indications de temps pour isoler un titre |
+| `_extract_alarm_title`, `_event_title` | titre d'une alarme ou d'un événement (« Réunion avec Sophie ») |
+| `_extract_mail_subject`, `_extract_mail_body` | objet et corps d'un mail |
+| `_find_contact(text)`, `load_contacts()` | carnet d'adresses `contacts.json` (nom → email) |
+| `_normalize_spoken_email(text)` | adresse dictée (« paul arobase exemple point com ») |
+| `_extract_city(text)` | ville d'une demande météo |
 
-| Fonction | Paramètres | Rôle des paramètres | Rôle |
-|---|---|---|---|
-| `detect_action(text, fallback_email=None)` | `text`, `fallback_email` | `text`: phrase utilisateur a analyser, `fallback_email`: email de secours si la phrase reference un mail precedent | entree principale: choisit le bon parser et renvoie une action |
-| `_parse_command(text)` | `text` | `text`: commande slash brute | parse `/help`, `/sendmail`, `/addevent`, etc. |
-| `_parse_natural_send_mail(text, fallback_email)` | `text`, `fallback_email` | `text`: phrase naturelle d'envoi, `fallback_email`: adresse a reutiliser si elle manque | comprend une demande naturelle d'envoi de mail et retourne une clarification si le contenu est incomplet |
-| `_parse_natural_alarm(text)` | `text` | `text`: phrase naturelle liee aux alarmes | comprend les requetes d'alarmes |
-| `_parse_natural_calendar(text)` | `text` | `text`: phrase naturelle liee au calendrier | comprend les requetes calendrier |
+Les demandes en langage naturel qui envoient un mail ou suppriment en masse portent `confirm: True` : le module présente l'action et attend un « oui ». Les commandes slash s'exécutent directement.
 
-#### Aides de parsing
+### `llm.py`
+- **Role**: client Ollama.
+- **Responsabilite**: état du modèle, conversation, garde-fous de la persona.
 
-| Fonction | Paramètres | Rôle des paramètres | Rôle |
-|---|---|---|---|
-| `_extract_email(value)` | `value` | `value`: texte source a analyser | extrait la premiere adresse email |
-| `_parse_datetime(value)` | `value` | `value`: date ISO/FR a convertir | convertit une date ISO/FR en `datetime` |
-| `_extract_time_of_day(text)` | `text` | `text`: phrase a analyser | extrait une heure/minute |
-| `_parse_datetime_expression(text)` | `text` | `text`: expression naturelle de date/heure | interprete une date/heure naturelle |
-| `_parse_day_value(value, now=None)` | `value`, `now` | `value`: jour a convertir, `now`: reference temporelle optionnelle | convertit un jour en datetime a minuit |
-| `_extract_day_period_bounds(text)` | `text` | `text`: phrase contenant une journee ou une periode | deduit une plage de dates |
-| `_extract_duration_minutes(text)` | `text` | `text`: phrase contenant une duree | extrait une duree en minutes |
-| `_clean_fragment(value)` | `value` | `value`: fragment texte brut | nettoie un fragment texte |
-| `_extract_alarm_title(text, lowered)` | `text`, `lowered` | `text`: phrase originale, `lowered`: version en minuscules | extrait le titre d'une alarme |
-| `_extract_mail_subject(text, quoted_parts)` | `text`, `quoted_parts` | `text`: phrase originale, `quoted_parts`: morceaux entre guillemets | extrait l'objet d'un mail |
-| `_extract_mail_body(text)` | `text` | `text`: phrase originale | extrait le corps d'un mail et indique s'il etait explicite |
-| `_references_previous_mail(text)` | `text` | `text`: phrase originale | detecte une reference a un mail deja cite |
-| `_is_mail_followup_payload(text)` | `text` | `text`: phrase originale | detecte une reponse de suivi (`message ...`, `objet ...`, `sujet ...`) sans verbe d'envoi |
+| Fonction | Rôle |
+|---|---|
+| `load_system_prompt()` | charge `system_prompt.txt` et y inscrit la formule d'appel |
+| `ollama_status()` | vérifie qu'Ollama répond et que le modèle existe |
+| `build_messages(history, message, context)` | prompt système + contexte en direct + historique récent |
+| `chat(history, message, temperature, context)` | réponse complète |
+| `chat_stream(history, message, temperature, context)` | réponse phrase par phrase, pour parler sans attendre la fin |
+| `split_sentences(buffer)` | découpe le flux en phrases complètes (sans couper « J.A.R.V.I.S. » ou « M. ») |
+| `claims_unexecuted_action(user_message, reply)` | détecte un modèle qui prétend avoir exécuté une action |
+| `complete(system, prompt, ...)` | génération ponctuelle (objet et corps des mails) |
+| `warm_up()` | charge le modèle en mémoire au démarrage |
+
+Si le modèle affirme « j'ai envoyé… » alors qu'aucun module n'a rien exécuté, sa réponse est remplacée par une demande de reformulation.
+
+### `voice.py`
+- **Role**: la voix de Jarvis, en local.
+- **Responsabilite**: synthèse vocale, reconnaissance vocale, mot d'activation.
+
+| Élément | Rôle |
+|---|---|
+| `PiperEngine` | voix neuronale Piper (`Jarvis/API/voices/<voix>.onnx`) |
+| `SayEngine` | voix système de macOS ; choisit la meilleure voix française installée |
+| `WhisperEngine` | reconnaissance avec faster-whisper ; décode le WAV, filtre le silence et les hallucinations |
+| `tts_engine()`, `stt_engine()` | moteur actif selon `JARVIS_TTS_ENGINE` / `JARVIS_STT_ENGINE` |
+| `tts_status()`, `stt_status()` | état pour `/api/status` |
+| `prepare_tts_text(text)` | adapte un texte à la voix (« 7 h 30 » → « 7 heures 30 », « °C » → « degrés ») |
+| `synthesize(text)` | texte → WAV (avec un petit cache) |
+| `speak_local(text)` | fait parler Jarvis sur les haut-parleurs du poste, sans HUD |
+| `extract_command(text)` | repère « Jarvis » (et ses graphies proches) et isole l'ordre |
+| `transcribe(data)` | WAV → `{text, wake, command}` |
+| `preload()` | charge les modèles vocaux au démarrage |
+
+En mode `auto` : Piper, sinon `say` (macOS), sinon le HUD utilise la voix du navigateur ; Whisper, sinon la reconnaissance du navigateur.
+
+### `briefing.py`
+- **Role**: vue d'ensemble de la journée.
+- **Responsabilite**: tableau de bord du HUD, briefing, contexte en direct pour la conversation.
+
+| Élément | Rôle |
+|---|---|
+| `Dashboard` | rassemble météo, agenda du jour, messages non lus et alarmes (cache de 90 s pour Google) |
+| `build_briefing(dashboard, kind)` | « Bonjour, Monsieur. Il est… » : version courte (`boot`) ou complète (`full`) |
+| `live_context(dashboard, message)` | contexte transmis au modèle : date et heure, plus agenda / météo / messagerie / état du poste si la question s'y rapporte |
+
+### `system_actions.py`
+- **Role**: capteurs et pilotage du poste.
+- **Responsabilite**: diagnostic, applications, volume, web, veille, heure et date.
+
+| Fonction | Rôle |
+|---|---|
+| `read_system_metrics()` | processeur, mémoire, disque, batterie, durée de service (via `psutil`) |
+| `system_alerts(metrics)` | points d'attention (batterie faible, mémoire ou disque saturés) |
+| `handle_system_status(params)` | rapport de diagnostic (`focus: "battery"` pour la batterie seule) |
+| `handle_time(timezone)`, `handle_date(timezone)` | heure et date |
+| `resolve_app(raw)` | « la calculette » → application à lancer, avec validation du nom |
+| `handle_open_app`, `handle_quit_app` | ouvre / ferme une application |
+| `handle_open_url`, `handle_web_search` | ouvre un site ou une recherche (web, Google, YouTube, Wikipédia) |
+| `handle_volume(params)` | volume : `get`, `set`, `up`, `down`, `mute`, `unmute` |
+| `handle_sleep_display()` | met l'écran en veille |
+
+Toutes les commandes système passent par `_run()` avec une liste d'arguments, jamais par un shell.
+
+### `weather.py`
+- **Role**: météo via Open-Meteo (gratuit, sans clé).
+
+| Fonction | Rôle |
+|---|---|
+| `get_weather(city=None)` | conditions actuelles + prévisions d'aujourd'hui et de demain (cache de 10 min) |
+| `handle_weather(params)` | réponse météo (`city`, `day: "tomorrow"`) avec conseil de parapluie |
+| `summarize_now(weather)` | phrase affichée et phrase prononcée |
+
+### `events.py`
+- **Role**: file d'événements proactifs.
+
+| Fonction | Rôle |
+|---|---|
+| `publish(kind, **payload)` | publie un événement (une alarme qui sonne) |
+| `events_after(after_id)` | événements à relever par le HUD |
+| `hud_is_listening()` | vrai si un HUD relève les événements : c'est alors lui qui prend la parole |
 
 ### `mail_actions.py`
-- **Role**: logique metier des emails.
-- **Responsabilite**: formatage des mails, generation assistée par Ollama, envoi.
+- **Role**: logique métier des emails.
+- **Responsabilite**: formatage des mails, génération assistée par le modèle, envoi.
 
-#### Fonctions
+| Fonction | Rôle |
+|---|---|
+| `extract_recent_email_from_history(history)` | dernière adresse vue dans la conversation |
+| `format_mail_resume(items)` | résumé des non lus (liste affichée + phrase prononcée) |
+| `format_last_mail(item)` | dernier email reçu |
+| `generate_email_subject(draft_context, body_hint)` | objet très court (1-2 mots), filtré s'il sort du contexte |
+| `generate_email_body(subject, draft_context, body_hint, polish_only)` | rédige ou améliore le corps |
+| `fallback_email_subject`, `fallback_email_body` | secours si le modèle ne répond pas |
+| `handle_send_mail(mail_client, params)` | prépare le message ; avec `confirm`, le présente et attend un « oui » ; sinon l'envoie |
 
-| Fonction | Paramètres | Rôle des paramètres | Rôle |
-|---|---|---|---|
-| `extract_first_email(value)` | `value` | `value`: texte source a analyser | extrait la premiere adresse email |
-| `extract_recent_email_from_history(history, max_messages=8)` | `history`, `max_messages` | `history`: messages recents, `max_messages`: nombre max de messages a analyser | recupere le dernier email visible dans l'historique |
-| `normalize_generated_french(text)` | `text` | `text`: sortie brute du modele | corrige certaines erreurs francaises du modele |
-| `format_mail_resume(items)` | `items` | `items`: liste d'emails non lus au format commun | formate le resume des emails non lus |
-| `format_last_mail(item)` | `item` | `item`: email unique ou `None` | formate le dernier email recu |
-| `fallback_email_subject(draft_context, body_hint)` | `draft_context`, `body_hint` | `draft_context`: contexte de la requete, `body_hint`: extrait du corps si disponible | fabrique un objet de secours |
-| `fallback_email_body(subject, draft_context, body_hint)` | `subject`, `draft_context`, `body_hint` | `subject`: objet choisi, `draft_context`: contexte, `body_hint`: contenu deja extrait | fabrique un corps de secours |
-| `generate_email_subject(draft_context, body_hint, ollama_url, ollama_model)` | `draft_context`, `body_hint`, `ollama_url`, `ollama_model` | `draft_context`/`body_hint`: contexte de generation, `ollama_url`: URL locale Ollama (`http://localhost:11434` par defaut), `ollama_model`: modele local utilise (`jarvis` par defaut) | demande a Ollama un objet tres court (1-2 mots) et filtre les sorties hors contexte |
-| `generate_email_body(subject, draft_context, body_hint, polish_only, ollama_url, ollama_model)` | `subject`, `draft_context`, `body_hint`, `polish_only`, `ollama_url`, `ollama_model` | `subject`: objet du mail, `draft_context`: contexte global, `body_hint`: brouillon extrait, `polish_only`: vrai pour juste ameliorer, `ollama_url`: URL locale Ollama (`http://localhost:11434` par defaut), `ollama_model`: modele local utilise (`jarvis` par defaut) | demande a Ollama de rediger ou d'ameliorer un corps d'email |
-| `handle_send_mail(mail_client, params, ollama_url, ollama_model)` | `mail_client`, `params`, `ollama_url`, `ollama_model` | `mail_client`: client Gmail, `params`: dictionnaire de l'action detectee, `ollama_url`: URL locale Ollama (`http://localhost:11434` par defaut), `ollama_model`: modele local utilise (`jarvis` par defaut) | orchestre l'envoi avec garde-fous: contenu obligatoire et blocage des textes inappropries |
+Règles appliquées au flux d'envoi:
 
-#### Regles appliquees au flux d'envoi mail
-
-- le message est obligatoire: si le corps est vide, l'API renvoie une demande de precision et n'envoie rien
-- l'objet auto-genere est limite a 1-2 mots maximum
-- les sorties verbeuses/hors sujet du modele sont ignorees au profit d'un fallback base sur le contexte
-- en mode `polish_only`, si le modele renvoie un texte trop proche du brouillon brut, l'API applique un fallback de corps formate
-- les contenus offensants ou sexuellement vulgaires explicites sont bloques avant l'appel Gmail
-- les contournements par espaces/ponctuation (ex: `z i z i`, `sui ci der`) sont aussi bloques apres normalisation du texte
+- le message est obligatoire : s'il manque, Jarvis le demande et n'envoie rien
+- l'objet auto-généré est limité à 1-2 mots
+- en mode amélioration, si le modèle recopie le brouillon, un corps formaté de secours est utilisé
+- les contenus offensants sont bloqués, y compris les contournements par espaces/ponctuation (`z i z i`)
+- le message envoyé après confirmation est exactement celui qui a été présenté
 
 ### `calendar_actions.py`
-- **Role**: logique metier du calendrier.
-- **Responsabilite**: affichage des evenements, disponibilites, creation/suppression.
+- **Role**: logique métier du calendrier.
 
-#### Fonctions
-
-| Fonction | Parametres | Role des parametres | Role |
-|---|---|---|---|
-| `format_datetime(value)` | `value` | `value`: date a formater | formate une date pour l'affichage |
-| `format_week_events(events)` | `events` | `events`: liste des evenements deja converts | formate les evenements de la semaine |
-| `compute_availability(events, timezone)` | `events`, `timezone` | `events`: evenements occupes, `timezone`: fuseau utilise pour le calcul | calcule les disponibilites du lundi au vendredi |
-| `handle_events_week(mail_client)` | `mail_client` | `mail_client`: client Google contenant la methode de lecture calendrier | retourne les evenements de la semaine |
-| `handle_availability_week(mail_client)` | `mail_client` | `mail_client`: client Google pour lire les evenements et le fuseau | retourne les disponibilites calculees |
-| `handle_add_event(mail_client, params)` | `mail_client`, `params` | `mail_client`: client Google, `params`: contient `title`, `start`, `end` | cree un evenement |
-| `handle_delete_event(mail_client, params)` | `mail_client`, `params` | `mail_client`: client Google, `params`: contient `event_id` | supprime un evenement par id |
-| `handle_delete_events_range(mail_client, params)` | `mail_client`, `params` | `mail_client`: client Google, `params`: contient `start`, `end` | supprime des evenements sur une plage |
-| `handle_events_range(mail_client, params)` | `mail_client`, `params` | `mail_client`: client Google, `params`: contient `start`, `end` | liste les evenements d'une plage ou d'un jour |
+| Fonction | Rôle |
+|---|---|
+| `format_week_events(events, now)` | événements de la semaine |
+| `compute_availability(events, timezone)` | créneaux libres du lundi au vendredi, 9 h-18 h |
+| `handle_events_week`, `handle_events_range` | liste sur la semaine, un jour ou une période |
+| `handle_availability_week` | disponibilités |
+| `handle_add_event(mail_client, params)` | crée un événement et signale un chevauchement éventuel |
+| `handle_delete_event`, `handle_delete_events_range` | suppression par id ou par plage (avec confirmation si `confirm`) |
 
 ### `alarm_actions.py`
-- **Role**: logique metier des alarmes.
-- **Responsabilite**: stockage en memoire, notification, son, scheduler.
+- **Role**: logique métier des alarmes, minuteurs et rappels.
 
-#### Constantes
-
-- `ALARM_NOTIFICATION_ENABLED`
-- `ALARM_SOUND_ENABLED`
-- `ALARM_SOUND_REPEAT`
-- `ALARM_SOUND_FILE`
-
-#### Fonctions privees
-
-| Fonction | Parametres | Role des parametres | Role |
-|---|---|---|---|
-| `_env_flag(name, default)` | `name`, `default` | `name`: variable d'environnement, `default`: valeur par defaut | lit un booléen depuis l'environnement |
-| `_env_int(name, default, min_value, max_value)` | `name`, `default`, `min_value`, `max_value` | `name`: variable a lire, `default`: valeur de secours, `min_value`/`max_value`: bornes | lit un entier borne |
-| `_run_command(command)` | `command` | `command`: commande systeme a executer | execute une commande systeme |
-| `_escape_applescript(value)` | `value` | `value`: texte brut a echapper | echappe une chaine pour AppleScript |
-| `_notify_alarm_desktop(label, when)` | `label`, `when` | `label`: titre de l'alarme, `when`: horodatage affiche | affiche une notification locale |
-| `_play_alarm_sound()` | aucun | aucun | joue un son d'alarme avec fallback |
-
-#### Fonctions publiques
-
-| Fonction | Parametres | Role des parametres | Role |
-|---|---|---|---|
-| `format_alarm_datetime(value, timezone)` | `value`, `timezone` | `value`: date a formater, `timezone`: fuseau de reference | formate une date d'alarme |
-| `format_alarm_list(items, timezone)` | `items`, `timezone` | `items`: liste des alarmes, `timezone`: fuseau d'affichage | formate la liste des alarmes actives |
-| `trigger_local_alarm(label, when)` | `label`, `when` | `label`: titre de l'alarme, `when`: date/heure de declenchement | lance notification + son |
-| `alarm_scheduler_loop(alarms)` | `alarms` | `alarms`: store qui expose `trigger_due_alarms()` | boucle de fond qui surveille les alarmes arrivees a echeance |
-| `handle_set_alarm(alarms, timezone, params)` | `alarms`, `timezone`, `params` | `alarms`: store d'alarmes, `timezone`: fuseau d'affichage, `params`: contient `when` et `title` | cree une alarme |
-| `handle_list_alarms(alarms, timezone)` | `alarms`, `timezone` | `alarms`: store d'alarmes, `timezone`: fuseau d'affichage | retourne les alarmes actives |
-| `handle_delete_alarm(alarms, params)` | `alarms`, `params` | `alarms`: store d'alarmes, `params`: contient `alarm_id` | supprime une alarme par id |
-| `handle_delete_alarms_range(alarms, params)` | `alarms`, `params` | `alarms`: store d'alarmes, `params`: contient `start`, `end` | supprime les alarmes sur une plage |
-| `handle_delete_alarms_all(alarms)` | `alarms` | `alarms`: store d'alarmes | supprime toutes les alarmes |
+| Fonction | Rôle |
+|---|---|
+| `alarm_scheduler_loop(alarms)` | boucle de fond : détecte les alarmes échues, publie l'événement, notifie et sonne |
+| `alarm_announcement(label, now)` | phrase prononcée (« Monsieur, il est 7 heures 30. ») |
+| `trigger_local_alarm(label, when, speak)` | notification + carillon + annonce vocale si aucun HUD n'est ouvert |
+| `handle_set_alarm(alarms, timezone, params)` | crée une alarme, un minuteur (`kind: "timer"`) ou un rappel (`kind: "reminder"`) |
+| `handle_list_alarms`, `handle_delete_alarm`, `handle_delete_alarms_range` | liste et suppressions |
+| `handle_delete_timers(alarms)` | arrête les minuteurs |
+| `handle_delete_alarms_all(alarms, params)` | supprime tout (avec confirmation si `confirm`) |
 
 ### `alarms.py`
 - **Role**: stockage persistant des alarmes en JSON.
-- **Responsabilite**: lecture/ecriture fichier, CRUD, detection des alarmes dues.
 
-#### Classe `AlarmStore`
-
-| Méthode | Paramètres | Rôle des paramètres | Rôle |
-|---|---|---|---|
-| `__init__(file_path, timezone_name)` | `file_path`, `timezone_name` | `file_path`: chemin du JSON, `timezone_name`: fuseau utilise pour normaliser les dates | initialise le magasin d'alarmes |
-| `from_env(timezone_name)` | `timezone_name` | `timezone_name`: fuseau de travail | fabrique le store depuis les variables d'environnement |
-| `create_alarm(when, label)` | `when`, `label` | `when`: date/heure cible, `label`: texte affiche | cree et persiste une alarme |
-| `list_alarms(include_triggered=False)` | `include_triggered` | `include_triggered`: inclure ou non les alarmes deja declenchees | liste les alarmes |
-| `delete_alarm(alarm_id)` | `alarm_id` | `alarm_id`: identifiant complet ou prefixe | supprime une alarme par id ou prefixe |
-| `delete_alarms_in_range(start, end, include_triggered=False)` | `start`, `end`, `include_triggered` | `start`/`end`: bornes temporelles, `include_triggered`: inclure les alarmes deja declenchees | supprime les alarmes sur une plage |
-| `delete_all_alarms(include_triggered=False)` | `include_triggered` | `include_triggered`: inclure les alarmes deja declenchees | supprime toutes les alarmes |
-| `trigger_due_alarms()` | aucun | aucun | marque et retourne les alarmes arrivees a l'heure |
+| Méthode de `AlarmStore` | Rôle |
+|---|---|
+| `from_env(timezone_name)` | fabrique le store (`ALARMS_FILE`) |
+| `create_alarm(when, label)` | crée et persiste une alarme |
+| `list_alarms(include_triggered=False)` | liste les alarmes |
+| `delete_alarm(alarm_id)` | supprime par id ou préfixe |
+| `delete_alarms_in_range(start, end)` | supprime sur une plage |
+| `delete_alarms_with_label_prefix(prefix)` | supprime par titre (les minuteurs) |
+| `delete_all_alarms(include_triggered=True)` | supprime tout |
+| `trigger_due_alarms()` | marque et retourne les alarmes arrivées à l'heure |
 
 ### `google_client.py`
 - **Role**: client OAuth unique pour Gmail et Google Calendar.
-- **Responsabilite**: authentification, rafraichissement du token, appels API Google.
+- **Responsabilite**: authentification, rafraîchissement du token, appels API Google.
 
-#### Exceptions
+| Méthode de `GoogleClient` | Rôle |
+|---|---|
+| `from_env()` | fabrique le client depuis l'environnement |
+| `is_configured()`, `missing_keys()`, `status()` | état de la configuration |
+| `setup_oauth_token()` | lance le flux OAuth et enregistre le token |
+| `disconnect(revoke=True)` | révoque et supprime le token local |
+| `get_unread_emails(limit=5)`, `get_latest_email()` | lecture de la boîte de réception |
+| `send_mail(to_email, subject, body)` | envoi via Gmail |
+| `list_week_events()`, `list_events_in_range(start, end)` | lecture du calendrier |
+| `create_event(subject, start, end)` | création d'un événement |
+| `delete_event(event_id)`, `delete_events_in_range(start, end)` | suppressions |
 
-- `GoogleConfigError`: probleme de configuration
-- `GoogleApiError`: erreur runtime API
-
-#### Classe `GoogleClient`
-
-| Méthode | Paramètres | Rôle des paramètres | Rôle |
-|---|---|---|---|
-| `__init__(client_secret_file, token_file, timezone_name, calendar_id)` | `client_secret_file`, `token_file`, `timezone_name`, `calendar_id` | `client_secret_file`: chemin du secret OAuth, `token_file`: chemin du token local, `timezone_name`: fuseau utilise, `calendar_id`: calendrier cible | initialise le client |
-| `from_env()` | aucun | aucun | fabrique le client depuis l'environnement |
-| `missing_keys()` | aucun | aucun | liste ce qui manque pour fonctionner |
-| `is_configured()` | aucun | aucun | dit si la config est complete |
-| `status()` | aucun | aucun | retourne un statut synthétique |
-| `disconnect(revoke=True)` | `revoke` | `revoke`: indique si le token doit aussi etre revoque cote Google | revoque et supprime le token local |
-| `setup_oauth_token()` | aucun | aucun | lance le flux OAuth et enregistre le token |
-| `get_unread_emails(limit=5)` | `limit` | `limit`: nombre maximum d'emails a recuperer | lit les emails non lus |
-| `get_latest_email()` | aucun | aucun | retourne le dernier email |
-| `send_mail(to_email, subject, body)` | `to_email`, `subject`, `body` | `to_email`: destinataire, `subject`: objet, `body`: contenu du mail | envoie un email via Gmail |
-| `list_week_events()` | aucun | aucun | retourne les evenements de la semaine |
-| `list_events_in_range(start, end)` | `start`, `end` | `start`/`end`: bornes de la periode a lire | retourne les evenements d'une plage |
-| `delete_events_in_range(start, end)` | `start`, `end` | `start`/`end`: bornes des evenements a supprimer | supprime les evenements d'une plage |
-| `create_event(subject, start, end)` | `subject`, `start`, `end` | `subject`: titre de l'evenement, `start`: debut, `end`: fin | cree un evenement calendrier |
-| `delete_event(event_id)` | `event_id` | `event_id`: identifiant de l'evenement a supprimer | supprime un evenement |
+Exceptions : `GoogleConfigError` (configuration), `GoogleApiError` (erreur à l'exécution).
 
 ### `google_auth_setup.py`
-- **Role**: point d'entree simple pour creer le token OAuth Google.
-- **Responsabilite**: lance `GoogleClient.setup_oauth_token()` et affiche le resultat.
+- **Role**: point d'entrée simple pour créer le token OAuth Google en ligne de commande.
 
-#### Fonction
+## Dépendances entre fichiers
 
-| Fonction | Paramètres | Rôle des paramètres | Rôle |
-|---|---|---|---|
-| `main()` | aucun | aucun | lance le flux OAuth et affiche le chemin du token |
-
-## Dependances entre fichiers
-
-| Fichier | Dependance principale |
+| Fichier | Dépendance principale |
 |---|---|
-| `main.py` | appelle `intents.py`, `mail_actions.py`, `calendar_actions.py`, `alarm_actions.py`, `google_client.py`, `alarms.py` |
-| `intents.py` | prepare les actions pour `main.py` |
-| `mail_actions.py` | utilise `GoogleClient` passe en parametre |
-| `calendar_actions.py` | utilise `GoogleClient` passe en parametre |
-| `alarm_actions.py` | utilise `AlarmStore` passe en parametre |
-| `alarms.py` | stockage persistant indépendant |
-| `google_client.py` | client métier central pour Gmail + Calendar |
-| `google_auth_setup.py` | utilitaire de configuration OAuth |
+| `main.py` | tous les modules ci-dessous |
+| `config.py` | aucun (chargé en premier) |
+| `persona.py` | `config.py` |
+| `intents.py` | `persona.py`, `config.py` |
+| `llm.py` | `persona.py`, `config.py` |
+| `voice.py` | `persona.py`, `config.py` |
+| `briefing.py` | `weather.py`, `system_actions.py`, `persona.py` |
+| `system_actions.py`, `weather.py` | `persona.py` |
+| `mail_actions.py` | `llm.py`, `persona.py`, `GoogleClient` passé en paramètre |
+| `calendar_actions.py` | `persona.py`, `GoogleClient` passé en paramètre |
+| `alarm_actions.py` | `events.py`, `voice.py`, `AlarmStore` passé en paramètre |
+| `alarms.py`, `events.py` | indépendants |
+| `google_client.py` | client central pour Gmail + Calendar |
