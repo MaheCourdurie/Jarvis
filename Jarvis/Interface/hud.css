@@ -152,6 +152,21 @@ button { font: inherit; color: inherit; }
 .boot-btn:hover:not(:disabled) { transform: scale(1.04); filter: brightness(1.15); }
 .boot-btn:disabled { opacity: 0.4; cursor: wait; }
 .boot-hint { margin-top: 14px; font-family: var(--mono); font-size: 12px; color: var(--muted); min-height: 1.4em; }
+.boot-code { display: flex; justify-content: center; gap: 10px; margin-bottom: 16px; }
+.boot-code[hidden] { display: none; }
+.boot-code input {
+  width: min(220px, 55vw);
+  padding: 12px 14px;
+  font-family: var(--mono);
+  font-size: 16px;
+  letter-spacing: 0.12em;
+  text-align: center;
+  color: var(--text);
+  background: rgba(6, 24, 38, 0.8);
+  border: 1px solid var(--cyan-soft);
+  outline: none;
+}
+.boot-code .boot-btn { padding: 12px 18px; }
 
 /* ── Grille du HUD ───────────────────────────────────────── */
 .hud {
@@ -402,6 +417,10 @@ button { font: inherit; color: inherit; }
 .entry.jarvis .text { color: var(--text); text-shadow: 0 0 12px rgba(79, 216, 255, 0.18); }
 .entry.alert .who, .entry.alert .text { color: var(--amber); }
 .entry .text a { color: var(--cyan); }
+.sources { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin-top: 8px; font-family: var(--mono); font-size: 12px; text-shadow: none; }
+.sources span { color: var(--muted); letter-spacing: 0.14em; text-transform: uppercase; font-size: 10.5px; }
+.sources a { color: var(--cyan-soft); text-decoration: none; border-bottom: 1px solid var(--cyan-dim); }
+.sources a:hover { color: var(--cyan-hot); border-bottom-color: var(--cyan); }
 .entry.pending .text::after { content: '▍'; margin-left: 2px; color: var(--cyan); animation: blink 0.9s steps(2) infinite; }
 
 @keyframes rise  { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -437,6 +456,12 @@ button { font: inherit; color: inherit; }
 .command .btn { flex: 0 0 auto; padding: 10px 18px; }
 
 .hints { margin-top: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--muted); text-align: center; }
+.hints.touch { display: none; }
+/* Écran tactile : pas de clavier physique, les raccourcis n'ont pas de sens. */
+@media (hover: none) and (pointer: coarse) {
+  .hints { display: none; }
+  .hints.touch { display: block; }
+}
 
 /* ── Tiroir d'aide ───────────────────────────────────────── */
 .drawer { position: fixed; inset: 0; z-index: 30; display: flex; justify-content: flex-end; background: rgba(1, 5, 10, 0.6); }
@@ -487,6 +512,29 @@ button { font: inherit; color: inherit; }
   .column.left { display: none; }
   .chip { padding: 6px 8px; letter-spacing: 0.1em; }
   .entry { grid-template-columns: 62px minmax(0, 1fr); gap: 10px; }
+}
+
+/* Téléphone : tout tient dans l'écran, encoche et barre d'accueil comprises. */
+@media (max-width: 600px) {
+  .hud {
+    height: 100vh;
+    height: 100dvh;
+    gap: 8px;
+    padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  }
+  .topbar { flex-wrap: wrap; gap: 8px; padding-bottom: 8px; }
+  .brand-name { font-size: 15px; letter-spacing: 0.2em; }
+  .toggles { gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+  .chip { padding: 5px 7px; font-size: 8.5px; letter-spacing: 0.08em; }
+  .core-wrap { height: clamp(150px, 30dvh, 280px); }
+  .heard { font-size: 12px; margin: 0 0 4px; }
+  .entry { grid-template-columns: 1fr; gap: 2px; padding: 8px 0; }
+  .entry .who { text-align: left; padding-top: 0; }
+  .entry .text { font-size: 16px; }
+  .command { margin-top: 6px; }
+  .command .btn { padding: 10px 12px; }
+  .boot-title { letter-spacing: 0.16em; }
+  .boot-lines { font-size: 11.5px; min-height: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

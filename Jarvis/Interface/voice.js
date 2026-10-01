@@ -4,13 +4,13 @@
 const STT_RATE = 16000;
 const PRE_ROLL_MS = 450;      // ce qui précède le début de la parole est conservé
 const START_MS = 60;          // durée de voix nécessaire pour ouvrir une prise de parole
-const SILENCE_MS = 750;       // silence qui clôt une prise de parole
+const SILENCE_MS = 600;       // silence qui clôt une prise de parole
 const MIN_SPEECH_MS = 320;
 const MAX_SPEECH_MS = 15000;
 const MIN_THRESHOLD = 0.012;
 
 // Graphies proches de « Jarvis » (utilisé seulement avec la reconnaissance du navigateur).
-const WAKE = /(?:^|[^a-z0-9])(d?j[ae]r+v[iy]s?(?:se|ce)?|gervais|jervis|charvis|jarbis)(?![a-z0-9])/i;
+const WAKE = /(?:^|[^a-z0-9])(d?j'?[ae]r+v[iy](?:s{1,2}e?|ce|es?)?|gervais|jervis|charvis|jarbis)(?![a-z0-9])/i;
 
 function extractCommand(text) {
   const match = WAKE.exec(text);
@@ -23,8 +23,10 @@ function extractCommand(text) {
 }
 
 export class VoiceEngine {
-  constructor(apiUrl) {
+  // headers(extra) ajoute le code d'accès aux requêtes quand Jarvis est utilisé à distance.
+  constructor(apiUrl, headers = (extra) => extra) {
     this.apiUrl = apiUrl;
+    this.headers = headers;
     this.ctx = null;
 
     // Synthèse
@@ -101,7 +103,7 @@ export class VoiceEngine {
     try {
       const res = await fetch(`${this.apiUrl}/api/tts`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.headers({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ text }),
       });
       if (!res.ok) {
@@ -350,7 +352,7 @@ export class VoiceEngine {
     try {
       const res = await fetch(`${this.apiUrl}/api/stt`, {
         method: 'POST',
-        headers: { 'Content-Type': 'audio/wav' },
+        headers: this.headers({ 'Content-Type': 'audio/wav' }),
         body: encodeWav(downsample(samples, rate, STT_RATE), STT_RATE),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

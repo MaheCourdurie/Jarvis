@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 import re
 import shlex
 from datetime import datetime, timedelta
 
-from config import CONTACTS_FILE
+from config import load_contacts
 from persona import TITLE, fold as _fold, smalltalk_reply, strip_vocative
 
 
@@ -70,17 +69,6 @@ NUMBER_WORDS = {
     "trente": 30,
     "quarante-cinq": 45,
 }
-
-
-def load_contacts() -> dict[str, str]:
-    """Charge le carnet d'adresses (nom → email) utilisé pour dicter un destinataire."""
-    try:
-        data = json.loads(CONTACTS_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {str(name).strip(): str(email).strip() for name, email in data.items() if "@" in str(email)}
 
 
 def _find_contact(text: str) -> tuple[str, str] | None:
@@ -1325,6 +1313,57 @@ def _parse_mail_reading(text: str) -> dict | None:
     return None
 
 
+_SEARCH_VERB = re.compile(
+    r"^(?:(?:peux|pourrais|pouvez|pourriez)[- ](?:tu|vous)\s+)?(?:me\s+)?"
+    r"(?:(?:fais|lance)(?:[- ]moi)?\s+une\s+recherche(?:\s+(?:web|internet))?\s+(?:sur|pour|de)\s+"
+    r"|(?:cherche|recherche|chercher|rechercher|trouve|trouver|renseigne[- ]toi sur)(?:[- ]moi)?\s+"
+    r"|regarde(?:[- ]moi)?\s+(?=.*\bsur (?:internet|le web|le net|google)\b))(.+)$",
+    flags=re.IGNORECASE,
+)
+# Questions dont la réponse se trouve sur le web : informations locales, récentes ou chiffrées.
+_WEB_TOPICS = re.compile(
+    r"\bhoraires?\b|\bheures? d'ouverture\b|\ba quelle heure (?:ouvre|ferme)\b|\b(?:ouvre|ferme) a quelle heure\b"
+    r"|\b(?:est|sont)[- ](?:il|elle|ils|elles|ce que) (?:encore |toujours )?ouverte?s?\b|\bencore ouverte?s?\b"
+    r"|\bpharmacies? de garde\b|\bprogramme (?:tv|tele|cine|du cinema)\b|\bseances? (?:de|du) cinema\b"
+    r"|\bau cinema\b|\bfilms? (?:a l'affiche|en ce moment|qui passent?)\b"
+    r"|\bactualites?\b|\bactus?\b|\bnews\b|\bdernieres nouvelles\b"
+    r"|\bresultats? (?:du|de la|des|d'un|d'une)\b|\bscore (?:du|de|des)\b|\bqui a gagne\b|\bclassement (?:de|du|des)\b"
+    r"|\bprix (?:de|du|d'un|d'une|des)\b|\bcombien (?:ca )?coute\b|\btarifs?\b"
+    r"|\bcours (?:de l'action|du bitcoin|de l'euro|du dollar|de bourse|de l'or)\b|\btaux de change\b"
+    r"|\bnumero de telephone\b|\badresse (?:de|du|des|d'un|d'une)\b"
+    r"|\bdate de sortie\b|\bquand sort\b|\btrafic\b|\bbouchons\b|\bgreves?\b"
+    r"|\b(?:restaurant|resto|boulangerie|pharmacie|medecin|dentiste|garage|supermarche|magasin|coiffeur)s? "
+    r"(?:ouverte?s?|pres|proche|a proximite|dans le coin|autour|a cote)\b"
+    r"|\bmeilleure?s? (?:restaurant|resto|bar|pizzeria|boulangerie|coiffeur|garage|medecin|dentiste)s?\b"
+)
+_PERSONAL_DATA = re.compile(r"\b(?:mes|mon|ma|nos|notre) (?:mails?|emails?|agenda|calendrier|evenements?|alarmes?|contacts?|horaires?|rendez)")
+
+
+def _parse_web_question(text: str) -> dict | None:
+    """Repère les demandes que Jarvis doit aller chercher lui-même sur le web."""
+    cleaned = text.strip().strip(".!?").strip()
+    folded = _fold(cleaned)
+    if _PERSONAL_DATA.search(folded) or re.search(r"\bdans (?:mes|mon|ma) \w+", folded):
+        return None
+
+    explicit = _SEARCH_VERB.match(cleaned)
+    if explicit:
+        query = explicit.group(1).strip()
+        # « sur YouTube » : on ouvre la recherche dans le navigateur, c'est pour regarder.
+        video = re.search(r"\s+(?:sur|dans)\s+youtube$", query, flags=re.IGNORECASE)
+        if video:
+            return {"action": "web_search", "params": {"query": query[: video.start()].strip(), "engine": "youtube"}}
+        query = re.sub(r"\s+(?:sur|dans)\s+(?:google|internet|le web|le net|wikip[ée]dia)$", "", query, flags=re.IGNORECASE).strip()
+        if query:
+            return {"action": "web_answer", "params": {"query": query}}
+
+    if _WEB_TOPICS.search(folded):
+        # La requête sera formulée par le modèle à partir de la question et de la ville.
+        return {"action": "web_answer", "params": {"query": None}}
+
+    return None
+
+
 def _parse_system(text: str) -> dict | None:
     """Interprète les demandes de pilotage du poste : diagnostic, volume, applications, web, veille."""
     folded = _fold(text).strip(" .!?")
@@ -1367,25 +1406,14 @@ def _parse_system(text: str) -> dict | None:
     ):
         return {"action": "sleep_display"}
 
-    # Recherche web
-    search = re.match(
-        r"^(?:(?:fais|lance)(?:[- ]moi)?\s+une\s+recherche(?:\s+(?:web|internet|google))?\s+(?:sur|pour|de)\s+"
-        r"|(?:cherche|recherche|trouve|google)(?:[- ]moi)?\s+)(.+)$",
+    # Recherche à ouvrir dans le navigateur (les recherches « parlées » sont dans _parse_web_question)
+    browser_search = re.match(
+        r"^(?:ouvre|affiche|montre)(?:[- ]moi)?\s+(?:une\s+|la\s+)?recherche\s+(?:web\s+|internet\s+|google\s+)?(?:sur|pour|de)\s+(.+)$",
         cleaned,
         flags=re.IGNORECASE,
     )
-    if search:
-        query = search.group(1).strip()
-        # Les recherches dans les données personnelles ne sont pas des recherches web.
-        if not re.search(r"\b(?:mails?|emails?|agenda|calendrier|evenements?|alarmes?|contacts?)\b", _fold(query)):
-            engine = "web"
-            engine_match = re.search(r"\s+(?:sur|dans)\s+(google|youtube|wikip[ée]dia|internet|le web|le net)$", query, flags=re.IGNORECASE)
-            if engine_match:
-                name = _fold(engine_match.group(1))
-                engine = name if name in {"google", "youtube", "wikipedia"} else "web"
-                query = query[: engine_match.start()].strip()
-            if query:
-                return {"action": "web_search", "params": {"query": query, "engine": engine}}
+    if browser_search:
+        return {"action": "web_search", "params": {"query": browser_search.group(1).strip(), "engine": "web"}}
 
     # Ouverture d'un site ou d'une application
     opening = re.match(r"^(?:ouvre|ouvrir|ouvrez|lance|lancer|lancez|d[ée]marre|d[ée]marrer)(?:[- ]moi)?\s+(.+)$", cleaned, flags=re.IGNORECASE)
@@ -1449,6 +1477,7 @@ def detect_action(text: str, fallback_email: str | None = None) -> dict | None:
         lambda: _parse_natural_calendar(stripped),
         lambda: _parse_mail_reading(stripped),
         lambda: _parse_info(stripped),
+        lambda: _parse_web_question(stripped),
         lambda: _parse_system(stripped),
     )
     for parser in parsers:

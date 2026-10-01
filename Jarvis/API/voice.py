@@ -5,8 +5,9 @@ Synthèse vocale, par ordre de préférence en mode « auto » :
 - say   : voix système de macOS
 - browser : repli sur la synthèse du navigateur (gérée côté HUD)
 
-Reconnaissance vocale :
-- whisper : faster-whisper en local
+Reconnaissance vocale, par ordre de préférence en mode « auto » :
+- mlx     : Whisper sur la puce graphique des Mac Apple Silicon (mlx-whisper), le plus rapide
+- whisper : faster-whisper sur le processeur (toutes plateformes)
 - browser : repli sur la reconnaissance du navigateur (gérée côté HUD)
 """
 
@@ -14,6 +15,8 @@ from __future__ import annotations
 
 import io
 import os
+
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 import platform
 import re
 import shutil
@@ -25,9 +28,11 @@ from collections import OrderedDict
 from pathlib import Path
 
 from config import (
+    CITY,
     PIPER_VOICE,
     STT_ENGINE,
     STT_LANGUAGE,
+    STT_VOCABULARY,
     TTS_ENGINE,
     TTS_RATE,
     TTS_VOICE,
@@ -35,6 +40,7 @@ from config import (
     WAKE_WORD,
     WHISPER_MODEL,
     env_str,
+    load_contacts,
 )
 from persona import strip_accents, to_speech
 
@@ -63,6 +69,7 @@ def prepare_tts_text(text: str) -> str:
     spoken = to_speech(text)
     spoken = re.sub(r"J\.\s?A\.\s?R\.\s?V\.\s?I\.\s?S\.?", "Jarvis", spoken, flags=re.IGNORECASE)
     spoken = re.sub(r"\b(\d{1,2})\s?h\s?(\d{2})?\b(?!\w)", _spoken_clock, spoken)
+    spoken = re.sub(r"\b(\d{1,2}):(\d{2})\b", _spoken_clock, spoken)
     spoken = re.sub(r"\s?°\s?C\b", " degrés", spoken)
     spoken = re.sub(r"\s?%", " pour cent", spoken)
     spoken = re.sub(r"(\d)\s?Go\b", r"\1 giga-octets", spoken)
@@ -282,8 +289,8 @@ def speak_local(text: str) -> bool:
 def _wake_pattern(word: str) -> re.Pattern:
     """Construit l'expression qui repère le mot d'activation et ses graphies proches."""
     if strip_accents(word.lower()) == "jarvis":
-        # Whisper transcrit parfois « Jarvis » en Jarvi, Djarvis, Gervais, Jervis…
-        body = r"(?:d?j[ae]r+v[iy]s?(?:se|ce)?|gervais|jervis|charvis|jarbis|j\.\s?a\.\s?r\.\s?v\.\s?i\.\s?s\.?)"
+        # Whisper transcrit parfois « Jarvis » en Jarvi, Jarvie, J'arvie, Djarvis, Gervais, Jervis…
+        body = r"(?:d?j'?[ae]r+v[iy](?:s{1,2}e?|ce|es?)?|gervais|jervis|charvis|jarbis|j\.\s?a\.\s?r\.\s?v\.\s?i\.\s?s\.?)"
     else:
         body = re.escape(strip_accents(word.lower()))
     return re.compile(rf"(?<![a-z0-9]){body}(?![a-z0-9])")
@@ -351,18 +358,46 @@ _HALLUCINATIONS = [
 ]
 
 
+MAX_VOCABULARY_WORDS = 40
+
+
+def stt_vocabulary() -> list[str]:
+    """Noms propres fournis à Whisper : prénom d'activation, ville, vocabulaire personnel, contacts.
+
+    Sans eux, un petit modèle écrit « Colombier » pour « Colomiers » ou « Jarvie » pour « Jarvis ».
+    """
+    words = [WAKE_WORD.capitalize(), CITY, *STT_VOCABULARY, *load_contacts().keys()]
+    unique: list[str] = []
+    for word in words:
+        word = word.strip()
+        if word and word.lower() not in {known.lower() for known in unique}:
+            unique.append(word)
+    return unique[:MAX_VOCABULARY_WORDS]
+
+
 def _looks_like_hallucination(text: str) -> bool:
     folded = strip_accents(text.lower())
     return any(marker in folded for marker in _HALLUCINATIONS)
 
 
+def _keep_segment(segment: dict) -> bool:
+    """Écarte les passages que Whisper juge silencieux ou trop incertains."""
+    return segment.get("no_speech_prob", 0.0) <= 0.6 and segment.get("avg_logprob", 0.0) >= -1.2
+
+
+def _join_segments(texts: list[str]) -> str:
+    text = re.sub(r"\s+", " ", " ".join(texts)).strip()
+    return "" if _looks_like_hallucination(text) else text
+
+
 class WhisperEngine:
-    """Reconnaissance vocale locale avec faster-whisper."""
+    """Reconnaissance vocale locale avec faster-whisper, sur le processeur."""
 
     name = "whisper"
+    default_model = "small"
 
-    def __init__(self, model_name: str) -> None:
-        self.model_name = model_name
+    def __init__(self, model_name: str = "") -> None:
+        self.model_name = model_name or self.default_model
         self._model = None
         self._lock = threading.Lock()
 
@@ -419,23 +454,86 @@ class WhisperEngine:
             segments, _info = self._model.transcribe(
                 samples,
                 language=STT_LANGUAGE or None,
-                beam_size=1,
+                beam_size=5,
                 vad_filter=True,
                 condition_on_previous_text=False,
-                # Oriente l'orthographe du prénom sans imposer sa présence.
-                initial_prompt="Jarvis.",
+                # Une simple liste de noms : elle oriente l'orthographe sans imposer leur présence.
+                initial_prompt=", ".join(stt_vocabulary()) + ".",
                 no_speech_threshold=0.6,
             )
-            kept = []
-            for segment in segments:
-                if segment.no_speech_prob > 0.6 or segment.avg_logprob < -1.2:
-                    continue
-                kept.append(segment.text.strip())
+            kept = [
+                segment.text.strip()
+                for segment in segments
+                if _keep_segment({"no_speech_prob": segment.no_speech_prob, "avg_logprob": segment.avg_logprob})
+            ]
+        return {"text": _join_segments(kept), "duration": duration}
 
-        text = re.sub(r"\s+", " ", " ".join(kept)).strip()
-        if _looks_like_hallucination(text):
-            text = ""
-        return {"text": text, "duration": duration}
+
+class MlxWhisperEngine:
+    """Reconnaissance vocale sur la puce graphique des Mac Apple Silicon (mlx-whisper).
+
+    Environ trois fois plus rapide que faster-whisper avec un modèle bien plus grand :
+    « large-v3-turbo » comprend une phrase en un tiers de seconde sur un Mac M5.
+    """
+
+    name = "mlx-whisper"
+    default_model = "large-v3-turbo"
+
+    def __init__(self, model_name: str = "") -> None:
+        self.model_name = model_name or self.default_model
+        if "/" in self.model_name:
+            self.repo = self.model_name
+        elif self.model_name in {"turbo", "large-v3-turbo"}:
+            self.repo = "mlx-community/whisper-large-v3-turbo"
+        else:
+            self.repo = f"mlx-community/whisper-{self.model_name}-mlx"
+        self._ready = False
+        self._lock = threading.Lock()
+
+    def available(self) -> bool:
+        if SYSTEM != "darwin" or platform.machine() != "arm64":
+            return False
+        try:
+            import mlx_whisper  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def _run(self, samples, **options) -> dict:
+        import mlx_whisper
+
+        return mlx_whisper.transcribe(
+            samples,
+            path_or_hf_repo=self.repo,
+            language=STT_LANGUAGE or None,
+            # Une seule température : pas de nouvelles tentatives qui rallongeraient l'attente.
+            temperature=0.0,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            verbose=None,
+            **options,
+        )
+
+    def load(self) -> None:
+        """Télécharge (au premier lancement) et charge le modèle sur la puce graphique."""
+        import numpy as np
+
+        with self._lock:
+            if not self._ready:
+                self._run(np.zeros(STT_SAMPLE_RATE, dtype=np.float32))
+                self._ready = True
+
+    def transcribe(self, data: bytes) -> dict:
+        samples = WhisperEngine._decode_wav(data)
+        duration = len(samples) / STT_SAMPLE_RATE
+        if duration < 0.25:
+            return {"text": "", "duration": duration}
+
+        self.load()
+        with self._lock:
+            result = self._run(samples, initial_prompt=", ".join(stt_vocabulary()) + ".")
+        kept = [segment.get("text", "").strip() for segment in result.get("segments", []) if _keep_segment(segment)]
+        return {"text": _join_segments(kept), "duration": duration}
 
 
 _stt_lock = threading.Lock()
@@ -449,9 +547,15 @@ def stt_engine():
     with _stt_lock:
         if _stt_resolved:
             return _stt_engine
-        if STT_ENGINE in {"auto", "whisper"}:
-            engine = WhisperEngine(WHISPER_MODEL)
-            _stt_engine = engine if engine.available() else None
+        if STT_ENGINE == "auto":
+            chain = [MlxWhisperEngine(WHISPER_MODEL), WhisperEngine(WHISPER_MODEL)]
+        elif STT_ENGINE == "mlx":
+            chain = [MlxWhisperEngine(WHISPER_MODEL)]
+        elif STT_ENGINE == "whisper":
+            chain = [WhisperEngine(WHISPER_MODEL)]
+        else:  # browser | off
+            chain = []
+        _stt_engine = next((engine for engine in chain if engine.available()), None)
         _stt_resolved = True
         return _stt_engine
 
@@ -478,6 +582,16 @@ def transcribe(data: bytes) -> dict:
     return result
 
 
+def prepare_stt() -> None:
+    """Télécharge et charge le modèle de reconnaissance choisi (utilisé par ./run_jarvis.sh setup)."""
+    engine = stt_engine()
+    if engine is None:
+        print("[voice] Aucun moteur de reconnaissance local : le HUD utilisera celui du navigateur.")
+        return
+    engine.load()
+    print(f"[voice] Reconnaissance vocale prête : {engine.name} {engine.model_name}")
+
+
 def preload() -> None:
     """Charge les modèles vocaux en tâche de fond pour que la première réponse soit immédiate."""
 
@@ -486,9 +600,9 @@ def preload() -> None:
             engine = stt_engine()
             if engine is not None:
                 engine.load()
-                print(f"[VOICE] Reconnaissance vocale prête (whisper {engine.model_name})", flush=True)
+                print(f"[VOICE] Reconnaissance vocale prête ({engine.name} {engine.model_name})", flush=True)
         except Exception as exc:
-            print(f"[VOICE] Chargement de Whisper impossible: {exc}", flush=True)
+            print(f"[VOICE] Chargement de la reconnaissance vocale impossible: {exc}", flush=True)
         try:
             if tts_engine() is not None:
                 synthesize("Prêt.")

@@ -8,7 +8,8 @@ J.A.R.V.I.S est un assistant personnel local, pensé comme celui de Tony Stark d
 - tu lui **parles** (« Jarvis, quel temps fait-il ? ») et il te **répond à voix haute**
 - il a le caractère du majordome : il te vouvoie, t'appelle « Monsieur », reste flegmatique et pince-sans-rire
 - il s'affiche dans un **HUD holographique** : réacteur animé qui réagit à la voix, capteurs système, agenda, météo
-- il **agit** vraiment : emails, calendrier, alarmes, minuteurs, applications, volume, recherches
+- il **agit** vraiment : emails, calendrier, alarmes, minuteurs, applications, volume
+- il **cherche sur le web** à ta place : horaires, prix, actualité, résultats… et te donne la réponse à voix haute
 - il est **proactif** : briefing d'accueil, annonce des alarmes, signalement des conflits d'agenda et de la batterie faible
 - il **converse** librement sur n'importe quel sujet, grâce à un modèle de langage local
 
@@ -21,13 +22,14 @@ Le projet combine:
 - un pipeline de fine-tuning MLX pour personnaliser le modèle
 - un prompt système partagé entre entraînement et inférence
 
-Rien ne quitte ta machine, à part les appels que tu demandes (Google, météo).
+Le modèle, la voix et la reconnaissance tournent sur ta machine. Seuls en sortent les appels que tu demandes : Google, la météo, et les recherches web (DuckDuckGo et les pages consultées), désactivables avec `JARVIS_WEB_SEARCH=0`.
 
 ## Sommaire
 
 - [Prérequis](#prérequis)
 - [Démarrage rapide](#démarrage-rapide)
 - [Parler à Jarvis](#parler-à-jarvis)
+- [Utiliser Jarvis depuis ton téléphone](#utiliser-jarvis-depuis-ton-téléphone)
 - [Ce que Jarvis sait faire](#ce-que-jarvis-sait-faire)
 - [Commandes de run_jarvis.sh](#commandes-de-run_jarvissh)
 - [Configuration (.env)](#configuration-env)
@@ -64,7 +66,7 @@ Le HUD s'ouvre sur `http://localhost:8001/`. Clique sur **Initialiser**, autoris
 
 Notes:
 
-- `setup` télécharge une fois la voix (~60 Mo) et le modèle Whisper (~480 Mo)
+- `setup` télécharge une fois la voix (~60 Mo) et le modèle de reconnaissance (Whisper large-v3-turbo, ~1,6 Go sur Mac Apple Silicon ; Whisper small, ~480 Mo ailleurs)
 - `create` télécharge une fois le modèle de base (`gemma4:e4b`, ~6,6 Go). Pour en choisir un autre, mets `JARVIS_BASE_MODEL` dans `.env` (par exemple `llama3.1:8b` ou `gemma3:4b`, plus léger)
 - copie `.env.example` en `.env` pour personnaliser (formule d'appel, ville, voix…)
 
@@ -90,6 +92,38 @@ Le réacteur change de couleur selon l'état : bleu (veille, écoute, réponse),
 
 Pendant que Jarvis parle ou réfléchit, le micro est ignoré : il ne s'entend pas lui-même.
 
+S'il écorche un nom propre (une ville, une enseigne, un prénom), ajoute-le à `JARVIS_STT_VOCABULARY` dans `.env` : la reconnaissance vocale saura alors l'écrire.
+
+Réactivité mesurée sur un MacBook Air M5, de la fin de ta phrase au début de la réponse : environ 1 seconde pour une action (heure, alarme, volume…), 2 secondes pour une question libre, 5 à 8 secondes pour une recherche web (Jarvis prévient aussitôt). Sur Mac Apple Silicon, la reconnaissance vocale tourne sur la puce graphique ; tant que le HUD est ouvert, le modèle de langage reste chargé en mémoire.
+
+## Utiliser Jarvis depuis ton téléphone
+
+Jarvis tourne sur le Mac ; le téléphone n'est qu'un écran et un micro de plus. L'accès passe par [Tailscale](https://tailscale.com), un réseau privé entre tes appareils : il fournit l'adresse HTTPS qu'exige le micro du téléphone, fonctionne aussi hors de chez toi, et Jarvis n'est jamais exposé sur Internet.
+
+1. Installe Tailscale sur le Mac et sur le téléphone, connectés au même compte.
+2. Sur le Mac :
+
+   ```bash
+   ./run_jarvis.sh phone
+   ```
+
+   La première fois, Tailscale demande d'autoriser la publication (« Serve ») : ouvre le lien affiché, accepte, puis la commande continue d'elle-même.
+3. Un QR code s'affiche à l'écran : scanne-le avec l'appareil photo du téléphone. Le lien contient un code d'accès, mémorisé une fois pour toutes par le navigateur du téléphone.
+4. Relance Jarvis (`./run_jarvis.sh start`) : le code d'accès et l'adresse Tailscale sont pris en compte.
+
+Depuis un autre appareil que le Mac, l'API exige ce code d'accès (`JARVIS_ACCESS_TOKEN`, créé dans `.env`) : un appareil du réseau Tailscale qui ne l'a pas ne peut rien faire. Pour couper l'accès : `tailscale serve --https=443 off`.
+
+Pour que Jarvis réponde au téléphone à tout moment, fais-le tourner en permanence sur le Mac :
+
+```bash
+./run_jarvis.sh service install   # démarre maintenant et à chaque ouverture de session
+./run_jarvis.sh service restart   # après une mise à jour du code ou du .env
+./run_jarvis.sh service status
+./run_jarvis.sh service remove
+```
+
+Le service exige que le projet soit hors du Bureau, des Documents et des Téléchargements : macOS interdit aux programmes d'arrière-plan d'accéder à ces dossiers. Range-le par exemple dans `~/Developer/Jarvis` (et recrée `.venv` après le déplacement). Sinon, lance simplement Jarvis à la main avec `./run_jarvis.sh start` quand tu en as besoin.
+
 ## Ce que Jarvis sait faire
 
 Conversation:
@@ -104,12 +138,22 @@ Informations:
 - `Quel temps fait-il ?` · `Quel temps fait-il à Lyon demain ?`
 - `Fais-moi le point` (briefing : heure, météo, agenda, messagerie, alertes)
 
+Recherche sur le web:
+
+- `Quels sont les horaires du Leclerc de Blagnac ?`
+- `Il y a une pharmacie de garde ce soir ?`
+- `Qui a gagné le dernier match du Stade Toulousain ?`
+- `Combien coûte un abonnement Netflix ?`
+- `Cherche les dernières nouvelles sur l'intelligence artificielle`
+
+Jarvis prévient (« Un instant, Monsieur, je consulte le réseau. »), interroge le web, lit les premières pages et répond en quelques phrases, sources à l'appui (affichées en liens dans le HUD). Il décide seul de chercher quand la question porte sur une information récente ou locale ; pour le forcer, commence par « cherche … ». Si aucun lieu n'est précisé, il utilise ta ville (`JARVIS_CITY`).
+
 Poste de travail:
 
 - `Lance un diagnostic` · `Niveau de batterie ?`
 - `Ouvre Safari` · `Ferme la calculette` · `Ouvre github.com`
 - `Monte le volume` · `Volume à 40` · `Coupe le son`
-- `Cherche les dernières news sur l'IA` · `Recherche Iron Man sur YouTube`
+- `Recherche Iron Man sur YouTube` · `Ouvre une recherche sur les réacteurs à arc` (dans le navigateur)
 - `Mets l'écran en veille`
 
 Alarmes, minuteurs, rappels:
@@ -184,6 +228,8 @@ chmod +x run_jarvis.sh
 - `web`: sert le HUD seul sur `http://localhost:8000` (l'API doit tourner à part)
 - `create`: crée/met à jour le modèle Ollama `jarvis` (GGUF fine-tuné s'il existe, sinon modèle de base)
 - `voice`: télécharge seulement les modèles de voix
+- `phone`: rend Jarvis accessible depuis le téléphone (Tailscale, HTTPS, code d'accès, QR code)
+- `service install|restart|remove|status`: fait tourner Jarvis en permanence (agent de session macOS ; projet hors du Bureau, des Documents et des Téléchargements)
 - `test`: envoie un prompt de test à Ollama
 - `pytest`: lance les tests automatiques
 - `train`: lance `Jarvis/train.py`
@@ -211,22 +257,25 @@ Tout est optionnel. Copie `.env.example` en `.env` à la racine et adapte.
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `JARVIS_USER_TITLE` | `Monsieur` | formule d'appel employée par Jarvis (`Madame`, un prénom…) |
-| `JARVIS_CITY` | `Paris` | ville par défaut pour la météo et le briefing |
+| `JARVIS_CITY` | `Paris` | ta ville : météo, briefing et recherches locales |
 | `OLLAMA_URL` | `http://localhost:11434` | adresse d'Ollama |
 | `OLLAMA_MODEL` | `jarvis` | modèle utilisé pour la conversation |
 | `JARVIS_BASE_MODEL` | `gemma4:e4b` | modèle de base utilisé par `create` sans GGUF fine-tuné |
 | `JARVIS_STRICT_ACTIONS_ONLY` | `0` | `1` : Jarvis refuse tout ce qui n'est pas une action (ancien comportement) |
 | `JARVIS_CONFIRM_ACTIONS` | `1` | confirmation avant envoi de mail et suppressions en masse |
+| `JARVIS_WEB_SEARCH` | `1` | `0` : Jarvis ne cherche plus lui-même sur le web, il ouvre la recherche dans le navigateur |
 | `JARVIS_TTS_ENGINE` | `auto` | synthèse : `auto`, `piper`, `say` (macOS), `browser`, `off` |
 | `JARVIS_PIPER_VOICE` | `fr_FR-tom-medium` | voix Piper |
 | `JARVIS_TTS_VOICE` | *(auto)* | voix macOS pour le moteur `say` |
 | `JARVIS_TTS_RATE` | `1.0` | débit de la voix |
-| `JARVIS_STT_ENGINE` | `auto` | reconnaissance : `auto`, `whisper`, `browser`, `off` |
-| `JARVIS_WHISPER_MODEL` | `small` | `tiny`, `base`, `small`, `medium` |
+| `JARVIS_STT_ENGINE` | `auto` | reconnaissance : `auto` (puce graphique du Mac, sinon processeur), `mlx`, `whisper`, `browser`, `off` |
+| `JARVIS_WHISPER_MODEL` | *(auto)* | `large-v3-turbo` sur la puce graphique, `small` sur le processeur ; aussi `tiny`, `base`, `medium` |
 | `JARVIS_WAKE_WORD` | `jarvis` | mot d'activation |
+| `JARVIS_STT_VOCABULARY` | *(vide)* | noms propres à bien reconnaître à l'oral (`Blagnac, Toulouse, Leclerc`) ; la ville et les contacts sont ajoutés d'office |
 | `JARVIS_HOST` / `JARVIS_PORT` | `127.0.0.1` / `8001` | adresse d'écoute de l'API |
 | `JARVIS_ALLOWED_ORIGINS` | *(vide)* | origines web supplémentaires autorisées |
 | `JARVIS_REMOTE_SYSTEM_CONTROL` | `0` | `1` : Discord peut piloter le poste |
+| `JARVIS_ACCESS_TOKEN` | *(vide)* | code exigé des autres appareils (téléphone) ; vide = accès à distance refusé ; créé par `./run_jarvis.sh phone` |
 | `GOOGLE_FORGET_TOKEN_ON_EXIT` | `1` | `0` : conserve la connexion Google entre deux lancements |
 
 Après avoir changé `JARVIS_USER_TITLE`, relance `./run_jarvis.sh create`.
@@ -319,9 +368,11 @@ Depuis Discord, Jarvis converse et gère mails, agenda et alarmes, avec les mêm
 Jarvis envoie des mails en ton nom et agit sur ton ordinateur : l'API est donc verrouillée par défaut.
 
 - elle n'écoute que sur `127.0.0.1` : elle n'est pas joignable depuis le réseau
+- l'accès depuis le téléphone passe par ton réseau privé Tailscale, et chaque appel à l'API venu d'un autre appareil doit présenter le code d'accès
 - seules les pages servies depuis `localhost` peuvent l'appeler : un site web quelconque ouvert dans ton navigateur ne peut pas faire agir Jarvis
 - les requêtes adressées à un autre nom d'hôte sont refusées (protection contre le DNS rebinding)
 - les commandes système ne passent jamais par un shell, et les noms d'applications et adresses web sont validés
+- lors d'une recherche web, seules des pages publiques sont lues (jamais le réseau local), et leur texte n'est qu'une donnée : le modèle qui le lit ne peut déclencher aucune action
 - `.env`, le secret client Google, le token et le carnet d'adresses sont exclus de git
 
 Pour ouvrir Jarvis à ton réseau local, en connaissance de cause : `JARVIS_HOST=0.0.0.0` et `JARVIS_ALLOWED_ORIGINS=http://ton-ip:8001`. Le micro du navigateur exige alors HTTPS ou `localhost`.
@@ -398,8 +449,10 @@ Le backend est découpé par domaine:
 - `Jarvis/API/config.py`: lecture du `.env` et réglages
 - `Jarvis/API/persona.py`: ton de Jarvis, dates en français, version orale des réponses
 - `Jarvis/API/intents.py`: parsing commandes slash + intentions naturelles
-- `Jarvis/API/llm.py`: client Ollama (conversation en flux, garde-fous)
-- `Jarvis/API/voice.py`: synthèse (Piper / say) et reconnaissance (Whisper), mot d'activation
+- `Jarvis/API/llm.py`: client Ollama (conversation en flux, outil de recherche, garde-fous)
+- `Jarvis/API/web_search.py`: recherche web (moteur, lecture des pages, extraction des passages utiles)
+- `Jarvis/API/voice.py`: synthèse (Piper / say) et reconnaissance (Whisper sur la puce graphique ou le processeur), mot d'activation
+- `Jarvis/API/phone_setup.py`: réglages de l'accès depuis le téléphone (code d'accès, QR code)
 - `Jarvis/API/briefing.py`: tableau de bord du HUD, briefing, contexte en direct
 - `Jarvis/API/system_actions.py`: diagnostic, applications, volume, web, veille
 - `Jarvis/API/weather.py`: météo (Open-Meteo, sans clé)
@@ -416,7 +469,7 @@ Le détail de chaque fichier est dans [Jarvis/API/README.md](Jarvis/API/README.m
 ./run_jarvis.sh pytest
 ```
 
-Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (commandes système simulées), la voix et l'API de bout en bout avec un faux compte Google. Ils ne touchent ni à ta messagerie, ni à ton agenda, ni à ton ordinateur.
+Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (commandes système simulées), la voix, la recherche web (faux moteur) et l'API de bout en bout avec un faux compte Google. Ils ne touchent ni à ta messagerie, ni à ton agenda, ni à ton ordinateur, ni au réseau.
 
 ## Arborescence du projet
 
@@ -424,7 +477,7 @@ Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (co
 .
 ├── README.md
 ├── requirements.txt            # API, Google, Discord
-├── requirements-voice.txt      # voix locale (Whisper + Piper)
+├── requirements-voice.txt      # voix locale (Whisper, sur puce graphique ou processeur, + Piper)
 ├── requirements-train.txt      # fine-tuning MLX
 ├── requirements-dev.txt        # tests
 ├── run_jarvis.sh
@@ -452,6 +505,8 @@ Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (co
     │   ├── persona.py
     │   ├── intents.py
     │   ├── llm.py
+    │   ├── web_search.py
+    │   ├── phone_setup.py
     │   ├── voice.py
     │   ├── briefing.py
     │   ├── system_actions.py

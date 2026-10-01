@@ -18,6 +18,8 @@ Sur ce Mac, tout est déjà installé (voir [section 6](#6-déjà-fait-sur-ce-ma
 
 Pour l'arrêter : `Ctrl+C` dans le terminal.
 
+Pour qu'il tourne en permanence (indispensable pour le téléphone) : `./run_jarvis.sh service install`. Attention : macOS interdit aux services d'arrière-plan de lire le Bureau ; tant que le projet est dans `~/Desktop`, le service refuse de s'installer (voir section 3).
+
 Ollama doit tourner (l'application Ollama ouverte suffit ; sinon `ollama serve` dans un autre terminal).
 
 Sur une autre machine, il faut d'abord installer :
@@ -33,7 +35,11 @@ python3 -m venv .venv
 
 Ces points n'ont pas pu être testés sans toi : ils demandent tes oreilles, ta voix ou tes comptes.
 
-- [ ] **Ta voix, dans ta pièce.** La reconnaissance n'a été essayée qu'avec une voix de synthèse. Essaie « Jarvis, quelle heure est-il ? », « Jarvis, lance un diagnostic », puis une question libre.
+- [x] **Ta voix, dans ta pièce.** Essayé le 30/09 : Jarvis t'entend et te répond. Il écorchait les noms propres (« Colomiers » devenait « colombier ») : corrigé par un vocabulaire fourni à la reconnaissance.
+- [ ] **Les noms propres, avec ta voix.** Le correctif n'a été vérifié qu'avec une voix de synthèse. Essaie « Jarvis, quel temps fait-il à Colomiers ? ». S'il en écorche d'autres, ajoute-les à `JARVIS_STT_VOCABULARY` dans `.env`.
+- [ ] **La réactivité.** Mesurée avec une voix de synthèse : environ 1 s pour une action, 2 s pour une question libre. Dis-moi si tu la sens encore lente, et sur quel type de demande.
+- [ ] **Le téléphone.** Voir la section 3 ; le micro de l'iPhone n'a pas pu être essayé.
+- [ ] **La recherche web, avec ta voix.** « Jarvis, quels sont les horaires du Leclerc de Blagnac ? » : il doit prévenir, chercher, puis donner les horaires, avec les sources en liens sous la réponse.
 - [ ] **La voix de Jarvis.** Je n'ai pas pu l'écouter. Si elle ne te plaît pas, voir [section 4](#4-réglages-utiles).
 - [ ] **L'autorisation du micro.** Si le HUD affiche « Micro inaccessible » : Réglages Système → Confidentialité et sécurité → Microphone → autorise ton navigateur, puis recharge la page.
 - [ ] **Une alarme avec le son.** Dis « Jarvis, minuteur de 10 secondes » : tu dois entendre le carillon et l'annonce. Mes essais ont été faits son coupé.
@@ -44,13 +50,20 @@ Ces points n'ont pas pu être testés sans toi : ils demandent tes oreilles, ta 
 
 ## 3. À configurer
 
-- [ ] **Créer ton `.env`** : `cp .env.example .env`, puis règle au moins `JARVIS_USER_TITLE` (« Monsieur » par défaut) et `JARVIS_CITY`. Après avoir changé la formule d'appel : `./run_jarvis.sh create`.
+- [x] **Ton `.env`** est créé, avec ta ville (`JARVIS_CITY=Colomiers`) et quelques noms propres à reconnaître (`JARVIS_STT_VOCABULARY=Blagnac, Toulouse, Leclerc`). Les autres options sont dans `.env.example`, dont `JARVIS_USER_TITLE` (« Monsieur » par défaut ; après l'avoir changé : `./run_jarvis.sh create`).
 - [ ] **Relier Google** (mails et agenda). Rien n'a été testé sur un vrai compte : il n'y avait pas d'identifiants sur cette machine.
   1. Suis « Configuration Google » dans le README (projet Google Cloud, API Gmail et Calendar, client OAuth « Desktop app »).
   2. Mets le chemin du JSON dans `.env` : `GOOGLE_CLIENT_SECRET_FILE=...`
   3. Relance Jarvis, puis HUD → panneau **Liaisons** → **Connecter**.
   4. Essaie : « Jarvis, résume mes mails », « qu'est-ce que j'ai de prévu demain ? », puis un envoi de mail vers ta propre adresse (il doit te montrer le message et demander « Dois-je l'envoyer ? »).
   5. Pour rester connecté entre deux lancements : `GOOGLE_FORGET_TOKEN_ON_EXIT=0`.
+- [ ] **Accès depuis l'iPhone** (Tailscale) :
+  1. Autorise la publication « Serve » sur la page Tailscale ouverte par `./run_jarvis.sh phone` (une seule fois).
+  2. Allume Tailscale sur l'iPhone (il est déjà dans ton réseau, mais hors ligne).
+  3. Scanne le QR code affiché sur le Mac ; le code d'accès est mémorisé par Safari.
+  4. Touche **Initialiser**, autorise le micro, puis « Jarvis, tu es là ? ».
+  5. Pour qu'il réponde à tout moment : `./run_jarvis.sh service install` sur le Mac, une fois le projet sorti du Bureau.
+- [ ] **Sortir le projet du Bureau** (pour le service permanent) : par exemple `~/Developer/Jarvis`, puis recréer `.venv` (`python3 -m venv .venv && ./run_jarvis.sh setup`) et `./run_jarvis.sh service install`.
 - [ ] **Carnet d'adresses** : `cp Jarvis/API/contacts.example.json Jarvis/API/contacts.json`, puis mets-y tes contacts. Tu pourras dire « envoie un mail à Paul… ».
 - [ ] **Bot Discord** : son code a été adapté (confirmations, pas de pilotage du Mac à distance) mais pas relancé, faute de token. À tester avec `python3 Discord/main.py`.
 
@@ -61,12 +74,14 @@ Ces points n'ont pas pu être testés sans toi : ils demandent tes oreilles, ta 
 | la voix ne te plaît pas | `JARVIS_TTS_ENGINE=say` (voix macOS). Pour mieux : télécharge une voix « Premium » dans Réglages Système → Accessibilité → Contenu énoncé, puis mets son nom exact (donné par `say -v '?'`) dans `JARVIS_TTS_VOICE` |
 | tu veux une autre voix Piper | `JARVIS_PIPER_VOICE=fr_FR-upmc-medium` et `JARVIS_PIPER_SPEAKER=1`, puis `./run_jarvis.sh voice` |
 | il parle trop vite ou trop lentement | `JARVIS_TTS_RATE=0.9` ou `1.1` |
-| il comprend mal | `JARVIS_WHISPER_MODEL=medium` puis `./run_jarvis.sh voice` (plus précis, plus lent) |
-| il réagit aux bruits, ou coupe tes phrases | `MIN_THRESHOLD` et `SILENCE_MS` en haut de `Jarvis/Interface/voice.js` |
+| il écorche un nom propre (ville, enseigne, prénom) | ajoute-le à `JARVIS_STT_VOCABULARY` dans `.env` |
+| il comprend mal en général | sur ce Mac, il utilise déjà le plus précis (large-v3-turbo, sur la puce graphique) ; vérifie le micro et le bruit ambiant |
+| il réagit aux bruits, ou coupe tes phrases | `MIN_THRESHOLD` et `SILENCE_MS` (600 ms de silence clôt une phrase) en haut de `Jarvis/Interface/voice.js` |
 | il repasse en veille trop vite | `ATTENTIVE_MS` en haut de `Jarvis/Interface/hud.js` |
 | il répond lentement | vérifie `ollama ps` (un autre modèle chargé ralentit tout) ; ou modèle plus léger : `JARVIS_BASE_MODEL=gemma3:4b` puis `./run_jarvis.sh create` |
 | tu veux l'ancien comportement strict | `JARVIS_STRICT_ACTIONS_ONLY=1` |
 | tu ne veux plus de confirmation avant envoi | `JARVIS_CONFIRM_ACTIONS=0` |
+| tu ne veux pas qu'il aille sur le web tout seul | `JARVIS_WEB_SEARCH=0` (il ouvrira la recherche dans le navigateur) |
 
 Après un changement dans `.env`, relance `./run_jarvis.sh start`.
 
@@ -83,9 +98,10 @@ Après un changement dans `.env`, relance `./run_jarvis.sh start`.
 ## 6. Déjà fait sur ce Mac
 
 - `.venv` créé, avec toutes les dépendances (API, voix, entraînement, tests)
-- voix Piper dans `Jarvis/API/voices/` et modèle Whisper `small` dans `~/.cache/huggingface/`
+- voix Piper dans `Jarvis/API/voices/` ; reconnaissance Whisper large-v3-turbo (puce graphique) et small (repli) dans `~/.cache/huggingface/`
 - modèle Ollama `jarvis` créé à partir de `gemma4:e4b`
-- 124 tests automatiques qui passent : `./run_jarvis.sh pytest`
+- `.env` avec ta ville, ton vocabulaire, le code d'accès du téléphone et l'adresse Tailscale
+- 167 tests automatiques qui passent : `./run_jarvis.sh pytest`
 
 Rien de tout cela n'est versionné (voir `.gitignore`).
 
@@ -95,9 +111,12 @@ Rien de tout cela n'est versionné (voir `.gitignore`).
 - **Les actions passent par des formulations reconnues** (`Jarvis/API/intents.py`). Le modèle de langage ne déclenche rien lui-même : si une phrase n'est pas comprise, Jarvis demande de reformuler. Pour lui apprendre une tournure, ajoute-la au parseur concerné, avec un test dans `tests/test_intents.py`.
 - **Mails** : lecture des non lus et du dernier reçu, envoi. Pas de réponse, de transfert ni de suppression.
 - **Météo** : aujourd'hui et demain seulement.
+- **Recherche web** : elle passe par DuckDuckGo, sans clé, et prend 5 à 8 secondes. Certains sites ne se laissent pas lire (pages construites en JavaScript, blocages) : Jarvis dit alors ce qu'il a trouvé et ce qui manque. La réponse vaut ce que valent les pages consultées, d'où les sources affichées.
+- **Calcul** : c'est le modèle qui calcule, et il se trompe parfois sur une multiplication.
 - **Mémoire** : la conversation en cours, rien d'un lancement à l'autre.
 - **Pilotage du poste** : complet sur macOS ; Linux et Windows sont prévus dans le code mais jamais essayés.
 - **Reconnaissance du navigateur** (repli si Whisper n'est pas installé) : écrite mais jamais essayée.
+- **Téléphone** : l'écoute s'arrête quand l'écran se verrouille ou que Safari passe en arrière-plan. Si le HUD est ouvert à la fois sur le Mac et sur le téléphone, les deux annoncent les alarmes.
 
 ## 8. Dépannage
 
@@ -109,10 +128,13 @@ Rien de tout cela n'est versionné (voir `.gitignore`).
 | pas de son | bouton **Voix** du HUD ; sinon `./run_jarvis.sh voice` |
 | il n'entend rien | bouton **Micro** du HUD ; autorisation du micro (section 2) |
 | « La liaison Google n'est pas établie » | section 3 |
+| le téléphone demande un code d'accès | rescanne le QR code : `./run_jarvis.sh phone` (le code est dans `.env`, `JARVIS_ACCESS_TOKEN`) |
+| « Serve is not enabled on your tailnet » | ouvre le lien affiché par Tailscale et accepte, puis relance `./run_jarvis.sh phone` |
+| le téléphone n'affiche rien | Tailscale allumé sur le téléphone ? Jarvis lancé sur le Mac (`./run_jarvis.sh service status`) ? |
 
 ## 9. Publier
 
-Le travail est commité sur la branche `feat/jarvis-iron-man`, pas sur `main`.
+Le travail est sur la branche `feat/jarvis-iron-man`, pas sur `main`. Commence par `git status` : tout ce qui n'est pas encore commité doit l'être avant la fusion.
 
 ```bash
 git checkout main

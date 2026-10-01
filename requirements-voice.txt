@@ -1,5 +1,8 @@
 # Voix locale de Jarvis (installée par ./run_jarvis.sh setup)
 # Reconnaissance vocale : Whisper en local
+# - sur la puce graphique des Mac Apple Silicon (trois fois plus rapide, modèle plus grand)
+mlx-whisper; sys_platform == "darwin" and platform_machine == "arm64"
+# - sur le processeur, partout ailleurs (et en repli)
 faster-whisper
 # Synthèse vocale : voix neuronale Piper
 piper-tts

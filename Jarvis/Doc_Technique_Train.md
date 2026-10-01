@@ -100,6 +100,7 @@ Points cles:
 - le modèle ne déclenche jamais d'action : s'il prétend en avoir exécuté une, sa réponse est remplacée (`llm.py`)
 - les envois de mail et les suppressions en masse demandés en langage naturel passent par une confirmation
 - la voix est locale : synthèse Piper (ou `say` sur macOS), reconnaissance Whisper (`voice.py`)
+- Jarvis cherche lui-même sur le web quand une question le demande, et répond à partir des pages lues (`web_search.py`)
 - les alarmes sont annoncées à voix haute, par le HUD s'il est ouvert, sinon par l'API (`alarm_actions.py`, `events.py`)
 - l'API n'accepte que les requêtes de ce poste (`main.py`)
 
@@ -113,7 +114,7 @@ Ce sous-dossier contient le HUD : l'interface de Jarvis, servie par l'API sur `h
 
 ### `hud.css`
 - **Role**: thème holographique (cyan sur fond sombre, trame technique, panneaux à coins marqués).
-- **Contenu**: variables CSS, grille du HUD, jauges, journal, écran de démarrage, responsive. L'attribut `data-state` de `<body>` change la couleur d'accent : ambre pendant l'analyse, rouge en alerte.
+- **Contenu**: variables CSS, grille du HUD, jauges, journal, écran de démarrage, responsive (dont une mise en page téléphone qui respecte l'encoche et la barre d'accueil). L'attribut `data-state` de `<body>` change la couleur d'accent : ambre pendant l'analyse, rouge en alerte.
 
 ### `core.js`
 - **Role**: le réacteur central, dessiné sur un `<canvas>`.
@@ -139,8 +140,8 @@ Ce sous-dossier contient le HUD : l'interface de Jarvis, servie par l'API sur `h
 | `outputLevel()` / `inputLevel()` | niveau et spectre pour animer le réacteur |
 | `startListening()` / `stopListening()` | ouvre ou ferme le micro |
 | `setGated(gated)` | ignore le micro pendant que Jarvis parle ou réfléchit |
-| `onBlock(block)` | détection d'activité vocale : ouvre une prise de parole au-dessus du bruit ambiant, la clôt après 750 ms de silence |
-| `transcribe(blocks, total, rate)` | ramène le son à 16 kHz, l'encode en WAV et l'envoie à `/api/stt` |
+| `onBlock(block)` | détection d'activité vocale : ouvre une prise de parole au-dessus du bruit ambiant, la clôt après 600 ms de silence |
+| `transcribe(blocks, total, rate)` | ramène le son à 16 kHz, l'encode en WAV et l'envoie à `/api/stt` (avec le code d'accès si besoin) |
 | `startBrowserRecognition()` | repli sur la reconnaissance vocale du navigateur |
 
 ### `mic-worklet.js`
@@ -174,9 +175,12 @@ Ce sous-dossier contient le HUD : l'interface de Jarvis, servie par l'API sur `h
 | `setMode(mode)` / `finishTurn()` | états du HUD et ouverture/fermeture du micro |
 | `refreshSystem()`, `refreshDashboard()`, `refreshStatus()` | panneaux Systèmes, Agenda/Messagerie/Alarmes, Liaisons |
 | `pollEvents()` / `announceAlarm(event)` | relève les événements proactifs et annonce les alarmes |
+| `keepModelWarm()` | garde le modèle de langage en mémoire tant que le HUD est ouvert (toutes les 10 minutes) |
+| `authHeaders()`, `askAccessCode()` | depuis le téléphone : ajoute le code d'accès aux requêtes, le demande sur l'écran de démarrage si besoin (il arrive d'abord par le lien d'appairage `#code=…`) |
 | `toggleGoogle(connect)` | connexion / déconnexion Google |
 | `setMic`, `setVoice`, `setContinuous`, `clearConversation`, `openHelp` | boutons du bandeau |
 | `addEntry`, `setEntryText`, `fillText` | journal de conversation (le texte est inséré sans HTML, les liens sont reconstruits) |
+| `addSources(entry, sources)` | affiche sous une réponse tirée du web les pages consultées, en liens |
 
 #### Déroulé d'un échange vocal
 

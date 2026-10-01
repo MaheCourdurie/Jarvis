@@ -2,7 +2,11 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#01050a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Jarvis">
 <title>J.A.R.V.I.S.</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,6 +24,10 @@
     <h1 class="boot-title">J.A.R.V.I.S.</h1>
     <p class="boot-tagline">Just A Rather Very Intelligent System</p>
     <ul class="boot-lines" id="bootLines"></ul>
+    <form class="boot-code" id="bootCode" hidden>
+      <input id="bootCodeInput" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Code d'accès" aria-label="Code d'accès">
+      <button class="boot-btn" type="submit">Valider</button>
+    </form>
     <button class="boot-btn" id="bootBtn" type="button" disabled>Connexion…</button>
     <p class="boot-hint" id="bootHint">Recherche du noyau sur ce poste…</p>
   </div>
@@ -96,6 +104,7 @@
       <button class="btn" id="sendBtn" type="submit">Envoyer</button>
     </form>
     <p class="hints">Dites « Jarvis, … » · Espace : parler sans le prénom · Échap : le faire taire</p>
+    <p class="hints touch">Dites « Jarvis, … » · touchez le réacteur pour parler ou le faire taire</p>
   </main>
 
   <!-- Colonne droite : la journée -->
@@ -125,6 +134,8 @@
     <h2 class="panel-title">À vos ordres</h2>
     <div class="examples">
       <p>« Jarvis, quel temps fait-il ? »</p>
+      <p>« Jarvis, quels sont les horaires du Leclerc de Blagnac ? »</p>
+      <p>« Jarvis, cherche les dernières nouvelles sur l'IA »</p>
       <p>« Jarvis, fais-moi le point »</p>
       <p>« Jarvis, lance un diagnostic »</p>
       <p>« Jarvis, ouvre Safari » · « monte le volume »</p>

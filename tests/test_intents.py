@@ -26,7 +26,12 @@ def action(text, **kwargs):
         ("Ferme Safari", "quit_app"),
         ("Monte le volume", "volume"),
         ("Coupe le son", "volume"),
-        ("Cherche les dernières news sur l'IA", "web_search"),
+        ("Cherche les dernières news sur l'IA", "web_answer"),
+        ("Quels sont les horaires du Leclerc de Blagnac ?", "web_answer"),
+        ("Il y a une pharmacie de garde ce soir ?", "web_answer"),
+        ("Qui a gagné le match du Stade Toulousain ?", "web_answer"),
+        ("Combien coûte un iPhone ?", "web_answer"),
+        ("Ouvre une recherche sur les réacteurs à arc", "web_search"),
         ("Mets l'écran en veille", "sleep_display"),
         ("Minuteur de 10 minutes", "set_alarm"),
         ("Rappelle-moi dans 20 minutes de sortir le gâteau", "set_alarm"),
@@ -83,10 +88,25 @@ def test_volume_params():
     assert intents.detect_action("Remets le son")["params"] == {"mode": "unmute"}
 
 
-def test_web_search_engine():
-    assert intents.detect_action("Recherche Iron Man sur YouTube")["params"] == {"query": "Iron Man", "engine": "youtube"}
-    # Chercher dans ses propres données n'est pas une recherche web.
-    assert action("Cherche dans mes mails le devis") != "web_search"
+def test_web_questions():
+    # Une recherche explicite : Jarvis cherche lui-même, avec la requête dictée.
+    assert intents.detect_action("Cherche le prix d'un abonnement Netflix sur internet") == {
+        "action": "web_answer",
+        "params": {"query": "le prix d'un abonnement Netflix"},
+    }
+    # Une question d'information : la requête sera formulée par le modèle.
+    assert intents.detect_action("À quelle heure ferme la Fnac de Toulouse ?")["params"] == {"query": None}
+    # « sur YouTube » : c'est pour regarder, on ouvre le navigateur.
+    assert intents.detect_action("Recherche Iron Man sur YouTube") == {
+        "action": "web_search",
+        "params": {"query": "Iron Man", "engine": "youtube"},
+    }
+    # Ses propres données ne se cherchent pas sur le web.
+    assert action("Cherche dans mes mails le devis") is None
+    assert action("Quels sont mes horaires demain ?") is None
+    # Les modules existants gardent la priorité.
+    assert action("Quelle heure est-il ?") == "time"
+    assert action("Trouve-moi un créneau libre demain") == "availability_week"
 
 
 def test_timer_and_reminder():

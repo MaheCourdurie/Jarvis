@@ -5,6 +5,31 @@ import { VoiceEngine } from './voice.js';
 // (./run_jarvis.sh web, port 8000), l'API est attendue sur le port 8001.
 const API_URL = location.port === '8000' ? `${location.protocol}//${location.hostname}:8001` : location.origin;
 
+// Depuis un autre appareil (téléphone), l'API exige un code d'accès. Il est transmis une
+// fois par le lien d'appairage (…/#code=XXXX), puis conservé dans ce navigateur.
+const TOKEN_KEY = 'jarvis.token';
+
+function readToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (err) { return ''; }
+}
+
+function storeToken(token) {
+  try { localStorage.setItem(TOKEN_KEY, token); } catch (err) { /* stockage indisponible */ }
+}
+
+(function pairFromLink() {
+  const match = location.hash.match(/(?:^#|&)code=([^&]+)/);
+  if (!match) return;
+  storeToken(decodeURIComponent(match[1]));
+  // Le code ne reste ni dans la barre d'adresse ni dans l'historique.
+  history.replaceState(null, '', location.pathname + location.search);
+})();
+
+function authHeaders(headers = {}) {
+  const token = readToken();
+  return token ? { ...headers, 'X-Jarvis-Token': token } : headers;
+}
+
 const ATTENTIVE_MS = 12000;        // après une réponse, Jarvis écoute sans qu'on redise son prénom
 const CONFIRM_MS = 30000;          // délai laissé pour répondre à « Dois-je l'envoyer ? »
 const UNGATE_DELAY_MS = 350;       // le micro rouvre un instant après la fin de la voix
@@ -35,6 +60,7 @@ const state = {
   afterReply: 'attentive',
   busy: false,
   silenced: false,            // l'utilisateur a fait taire la réponse en cours
+  activity: '',               // ce que Jarvis est en train de faire (« Recherche web »)
   alertUntil: 0,
   lastEventId: null,
   booted: false,
@@ -44,7 +70,7 @@ const state = {
   continuous: loadSetting('jarvis.continuous', false),
 };
 
-const voice = new VoiceEngine(API_URL);
+const voice = new VoiceEngine(API_URL, authHeaders);
 const core = new ReactorCore($('core'));
 let ungateTimer = null;
 let heardTimer = null;
@@ -53,9 +79,17 @@ let toastTimer = null;
 // ── Accès à l'API ─────────────────────────────────────────────────────────
 
 async function api(path, options = {}) {
-  const res = await fetch(`${API_URL}${path}`, { signal: AbortSignal.timeout(options.timeout || 8000), ...options });
+  const res = await fetch(`${API_URL}${path}`, {
+    signal: AbortSignal.timeout(options.timeout || 8000),
+    ...options,
+    headers: authHeaders(options.headers || {}),
+  });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(data.detail || `HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -63,7 +97,7 @@ async function api(path, options = {}) {
 
 function stateLabel() {
   switch (state.mode) {
-    case 'thinking': return 'Analyse';
+    case 'thinking': return state.activity || 'Analyse';
     case 'speaking': return 'Réponse';
     case 'attentive': return 'À l\'écoute';
     case 'standby':
@@ -148,6 +182,28 @@ function addEntry(role, text, extraClass = '') {
   return entry;
 }
 
+// Sous une réponse tirée du web : les pages consultées, en liens cliquables.
+function addSources(entry, sources) {
+  if (!sources || !sources.length) return;
+  const list = document.createElement('div');
+  list.className = 'sources';
+  const label = document.createElement('span');
+  label.textContent = 'Sources';
+  list.appendChild(label);
+  for (const source of sources) {
+    if (!/^https?:\/\//.test(source.url)) continue;
+    const link = document.createElement('a');
+    link.href = source.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = source.site || source.title;
+    link.title = source.title || source.url;
+    list.appendChild(link);
+  }
+  entry.querySelector('.text').appendChild(list);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
 function setEntryText(entry, text) {
   fillText(entry.querySelector('.text'), text);
   $('log').scrollTop = $('log').scrollHeight;
@@ -196,6 +252,7 @@ async function send(rawText) {
   voice.stopSpeaking();
   state.busy = true;
   state.silenced = false;
+  state.activity = '';
   addEntry('user', text);
   state.history.push({ role: 'user', content: text });
   setMode('thinking');
@@ -207,7 +264,7 @@ async function send(rawText) {
   try {
     const res = await fetch(`${API_URL}/api/chat/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         message: text,
         history: state.history.slice(-20),
@@ -223,6 +280,9 @@ async function send(rawText) {
         streamed += (streamed ? ' ' : '') + event.text;
         setEntryText(entry, streamed);
         if (!state.silenced) voice.speak(event.text);
+      } else if (event.type === 'status') {
+        state.activity = event.label || '';
+        render();
       } else if (event.type === 'final') {
         final = event;
       }
@@ -242,12 +302,15 @@ async function send(rawText) {
     if (!state.silenced) voice.speak(final.speech || final.reply);
   }
 
+  if (final.data && final.data.sources) addSources(entry, final.data.sources);
+
   state.pending = final.pending || null;
   state.history.push({ role: 'assistant', content: final.reply });
   state.afterReply = final.data && final.data.standby ? 'standby' : 'attentive';
   state.busy = false;
+  state.activity = '';
 
-  if (final.action && final.action !== 'smalltalk') refreshDashboard();
+  if (final.action && !['smalltalk', 'web_answer'].includes(final.action)) refreshDashboard();
   if (voice.speaking) setMode('speaking');
   else finishTurn();
 }
@@ -590,6 +653,23 @@ function bootLine(label, value, level) {
   $('bootLines').appendChild(line);
 }
 
+// Demande le code d'accès sur l'écran de démarrage (connexion depuis un autre appareil).
+function askAccessCode(message) {
+  const form = $('bootCode');
+  form.hidden = false;
+  $('bootHint').textContent = message;
+  return new Promise((resolve) => {
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      const code = $('bootCodeInput').value.trim();
+      if (!code) return;
+      storeToken(code);
+      form.hidden = true;
+      resolve();
+    };
+  });
+}
+
 async function waitForCore() {
   const button = $('bootBtn');
   const hint = $('bootHint');
@@ -598,10 +678,14 @@ async function waitForCore() {
       await refreshStatus();
       button.disabled = false;
       button.textContent = 'Initialiser';
-      hint.textContent = 'Noyau détecté. Cliquez pour initialiser les systèmes.';
+      hint.textContent = 'Noyau détecté. Touchez pour initialiser les systèmes.';
       return;
     } catch (err) {
-      hint.textContent = `Noyau injoignable sur ${API_URL} — lancez ./run_jarvis.sh start`;
+      if (err.status === 401) {
+        await askAccessCode(readToken() ? 'Code refusé. Saisissez le code d\'accès affiché sur le Mac.' : 'Saisissez le code d\'accès affiché sur le Mac.');
+        continue;
+      }
+      hint.textContent = err.status === 403 ? err.message : `Noyau injoignable sur ${API_URL} — lancez ./run_jarvis.sh start`;
       await sleep(2500);
     }
   }
@@ -647,6 +731,9 @@ async function boot() {
 
   refreshSystem();
   refreshDashboard();
+  keepModelWarm();
+  // Tant que le HUD est ouvert, le modèle reste en mémoire : pas d'attente de rechargement.
+  setInterval(keepModelWarm, 10 * 60 * 1000);
   setInterval(refreshSystem, 3000);
   setInterval(refreshDashboard, 60000);
   setInterval(() => refreshStatus().catch(() => {}), 15000);
@@ -654,6 +741,10 @@ async function boot() {
   setInterval(pollEvents, 2500);
 
   greet();
+}
+
+function keepModelWarm() {
+  api('/api/warmup', { method: 'POST' }).catch(() => {});
 }
 
 // « Bonjour, Monsieur. Il est 7 heures… » : le briefing d'accueil.

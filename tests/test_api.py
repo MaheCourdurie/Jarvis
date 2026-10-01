@@ -84,6 +84,7 @@ def google(monkeypatch):
     monkeypatch.setattr("briefing.get_weather", weather.get_weather)
     monkeypatch.setattr(main.llm, "ollama_status", lambda: (True, "ok"))
     monkeypatch.setattr(main.llm, "warm_up", lambda: None)
+    monkeypatch.setattr(main.llm, "supports_tools", lambda: False)
     monkeypatch.setattr(main.llm, "complete", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("hors ligne")))
     return fake
 
@@ -236,14 +237,15 @@ def test_remote_clients_cannot_drive_the_computer(client, monkeypatch):
 def test_conversation_goes_to_the_model_with_live_context(client, monkeypatch):
     seen = {}
 
-    def fake_chat(history, message, temperature, context=""):
-        seen.update(message=message, context=context)
-        return "Une approche audacieuse, Monsieur."
+    def fake_stream(history, message, temperature, context="", tools=None):
+        seen.update(message=message, context=context, tools=tools)
+        yield "Une approche audacieuse, Monsieur."
 
-    monkeypatch.setattr(main.llm, "chat", fake_chat)
+    monkeypatch.setattr(main.llm, "chat_stream", fake_stream)
     reply = chat(client, "J'ai le temps de faire une sieste avant mon prochain rendez-vous ?")
     assert reply["source"] == "ollama" and reply["reply"] == "Une approche audacieuse, Monsieur."
     assert seen["context"].startswith("Contexte en direct : nous sommes le ")
+    assert "Ville de l'utilisateur : Paris." in seen["context"]
     assert "Agenda restant aujourd'hui" in seen["context"]
 
     chat(client, "Raconte-moi une blague")
@@ -257,7 +259,7 @@ def test_model_offline_keeps_modules_available(client, monkeypatch):
 
 
 def test_help_is_not_triggered_by_ordinary_sentences(client, monkeypatch):
-    monkeypatch.setattr(main.llm, "chat", lambda *args, **kwargs: "Volontiers, Monsieur.")
+    monkeypatch.setattr(main.llm, "chat_stream", lambda *args, **kwargs: iter(["Volontiers, Monsieur."]))
     assert chat(client, "aide")["action"] == "help"
     assert chat(client, "Que peux-tu faire ?")["reply"].startswith("Je gère votre messagerie")
     assert chat(client, "Aide-moi à comprendre les fractions")["source"] == "ollama"

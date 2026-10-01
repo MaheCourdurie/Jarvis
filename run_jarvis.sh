@@ -18,7 +18,9 @@ TEST_PROMPT="Bonjour Jarvis. Présente-toi en une phrase."
 # Modèle de base utilisé quand aucun GGUF fine-tuné n'est présent (surchargeable dans .env).
 DEFAULT_BASE_MODEL="gemma4:e4b"
 DEFAULT_PIPER_VOICE="fr_FR-tom-medium"
-DEFAULT_WHISPER_MODEL="small"
+SERVICE_LABEL="fr.jarvis.assistant"
+SERVICE_PLIST="$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
+SERVICE_LOG="$HOME/Library/Logs/Jarvis.log"
 
 print_usage() {
   # Affiche l'aide d'utilisation du script et la liste des commandes disponibles.
@@ -33,6 +35,8 @@ Commands:
   create   Créer ou mettre à jour le modèle Ollama "jarvis"
            (GGUF fine-tuné s'il existe, sinon modèle de base JARVIS_BASE_MODEL)
   voice    Télécharger les modèles de voix (Piper + Whisper)
+  phone    Rendre Jarvis accessible depuis le téléphone (Tailscale, HTTPS, code d'accès)
+  service  Faire tourner Jarvis en permanence : service install | restart | remove | status (macOS)
   test     Lancer un prompt de test rapide sur Ollama
   pytest   Lancer les tests automatiques
   train    Lancer le script de fine-tuning (Jarvis/train.py)
@@ -73,9 +77,8 @@ env_value() {
 setup_voice() {
   # Télécharge la voix Piper et le modèle Whisper (une seule fois, ~550 Mo).
   activate_venv
-  local voice whisper voices_dir
+  local voice voices_dir
   voice="$(env_value JARVIS_PIPER_VOICE "$DEFAULT_PIPER_VOICE")"
-  whisper="$(env_value JARVIS_WHISPER_MODEL "$DEFAULT_WHISPER_MODEL")"
   voices_dir="$(env_value JARVIS_VOICES_DIR "$API_DIR/voices")"
 
   if [[ -f "$voices_dir/$voice.onnx" ]]; then
@@ -87,9 +90,9 @@ setup_voice() {
       || echo "[voice] Voix Piper indisponible: Jarvis utilisera la voix du système."
   fi
 
-  echo "[voice] Préparation du modèle Whisper: $whisper"
-  python -c "from faster_whisper import WhisperModel; WhisperModel('$whisper', device='auto', compute_type='int8')" \
-    || echo "[voice] Whisper indisponible: Jarvis utilisera la reconnaissance du navigateur."
+  echo "[voice] Préparation de la reconnaissance vocale (téléchargement au premier lancement)"
+  (cd "$API_DIR" && python -c "import voice; voice.prepare_stt()") \
+    || echo "[voice] Reconnaissance locale indisponible: Jarvis utilisera celle du navigateur."
 }
 
 setup_deps() {
@@ -146,6 +149,14 @@ run_start() {
     opener="open"
   elif command -v xdg-open >/dev/null 2>&1; then
     opener="xdg-open"
+  fi
+
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Jarvis tourne déjà (service ?) : ouverture de $url"
+    if [[ -n "$opener" ]]; then
+      "$opener" "$url"
+    fi
+    return
   fi
 
   if [[ -n "$opener" ]]; then
@@ -306,6 +317,130 @@ create_model() {
   (cd "$PROJECT_DIR" && ollama create "$MODEL_NAME" -f "$GENERATED_MODELFILE")
 }
 
+run_phone() {
+  # Publie Jarvis en privé sur le réseau Tailscale, en HTTPS (exigé par le micro du téléphone).
+  activate_venv
+  local ts dns port token link
+  ts="$(command -v tailscale || true)"
+  if [[ -z "$ts" && -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
+    ts="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+  fi
+  if [[ -z "$ts" ]]; then
+    echo "Tailscale n'est pas installé. Installe-le sur le Mac et sur le téléphone : https://tailscale.com/download"
+    exit 1
+  fi
+
+  dns="$("$ts" status --json 2>/dev/null | python -c 'import json, sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
+  if [[ -z "$dns" ]]; then
+    echo "Tailscale n'est pas connecté : ouvre l'application Tailscale sur le Mac et connecte-toi."
+    exit 1
+  fi
+
+  port="$(env_value JARVIS_PORT 8001)"
+  token="$(cd "$API_DIR" && python phone_setup.py settings "$dns")"
+
+  echo "[phone] Publication privée de Jarvis sur https://$dns (réseau Tailscale uniquement)"
+  echo "[phone] Si Tailscale demande d'activer HTTPS, ouvre le lien qu'il affiche puis relance la commande."
+  "$ts" serve --bg --https=443 "http://127.0.0.1:$port"
+
+  link="https://$dns/#code=$token"
+  python -c "import segno" >/dev/null 2>&1 || pip install --quiet segno || true
+  echo
+  echo "Sur le téléphone : active Tailscale, puis scanne ce QR code (ou ouvre le lien) :"
+  (cd "$API_DIR" && python phone_setup.py qr "$link")
+  echo "$link"
+  echo
+  echo "Relance Jarvis pour appliquer le réglage : ./run_jarvis.sh start (ou ./run_jarvis.sh service install)"
+  echo "Pour couper l'accès depuis le téléphone : $ts serve --https=443 off"
+}
+
+run_service() {
+  # Fait tourner Jarvis en arrière-plan, relancé à chaque ouverture de session (agent launchd).
+  local action="${1:-status}" domain
+  domain="gui/$(id -u)"
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "La commande service n'existe que sur macOS."
+    exit 1
+  fi
+
+  case "$action" in
+    install)
+      # macOS interdit aux services d'arrière-plan de lire le Bureau, les Documents et les
+      # Téléchargements : le service échouerait en boucle (« Operation not permitted »).
+      case "$ROOT_DIR/" in
+        "$HOME/Desktop/"*|"$HOME/Documents/"*|"$HOME/Downloads/"*|"$HOME/Library/Mobile Documents/"*)
+          echo "Le projet est dans un dossier protégé par macOS ($ROOT_DIR)."
+          echo "Un service d'arrière-plan ne peut pas y accéder. Deux solutions :"
+          echo "  - déplacer le projet ailleurs (par exemple ~/Developer/Jarvis), puis relancer cette commande ;"
+          echo "  - ou lancer Jarvis à la main quand tu en as besoin : ./run_jarvis.sh start"
+          exit 1
+          ;;
+      esac
+      if lsof -nP -iTCP:"$(env_value JARVIS_PORT 8001)" -sTCP:LISTEN >/dev/null 2>&1; then
+        echo "Jarvis tourne déjà sur ce port : arrête-le d'abord (Ctrl+C dans son terminal)."
+        exit 1
+      fi
+      mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+      cat > "$SERVICE_PLIST" <<PLIST_END
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$SERVICE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$ROOT_DIR/run_jarvis.sh</string>
+    <string>api</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$ROOT_DIR</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$SERVICE_LOG</string>
+  <key>StandardErrorPath</key>
+  <string>$SERVICE_LOG</string>
+</dict>
+</plist>
+PLIST_END
+      launchctl bootout "$domain/$SERVICE_LABEL" >/dev/null 2>&1 || true
+      launchctl bootstrap "$domain" "$SERVICE_PLIST"
+      echo "Jarvis tourne désormais en permanence, et redémarre avec ta session."
+      echo "Interface : http://localhost:$(env_value JARVIS_PORT 8001)/ · Journal : $SERVICE_LOG"
+      ;;
+    restart)
+      # Après une mise à jour du code ou du .env.
+      launchctl kickstart -k "$domain/$SERVICE_LABEL"
+      echo "Jarvis relancé."
+      ;;
+    remove|uninstall)
+      launchctl bootout "$domain/$SERVICE_LABEL" >/dev/null 2>&1 || true
+      rm -f "$SERVICE_PLIST"
+      echo "Service Jarvis retiré."
+      ;;
+    status)
+      if launchctl print "$domain/$SERVICE_LABEL" >/dev/null 2>&1; then
+        echo "Service Jarvis actif. Journal : $SERVICE_LOG"
+      else
+        echo "Service Jarvis non installé (./run_jarvis.sh service install)."
+      fi
+      ;;
+    *)
+      echo "Usage: ./run_jarvis.sh service install|restart|remove|status"
+      exit 1
+      ;;
+  esac
+}
+
 run_pytest() {
   # Lance les tests automatiques (intentions, persona, pilotage du poste, API).
   activate_venv
@@ -332,6 +467,12 @@ main() {
       ;;
     voice)
       setup_voice
+      ;;
+    phone)
+      run_phone
+      ;;
+    service)
+      run_service "${2:-status}"
       ;;
     pytest)
       run_pytest

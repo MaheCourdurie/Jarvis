@@ -20,6 +20,7 @@ os.environ.update(
         "JARVIS_CITY": "Paris",
         "JARVIS_STRICT_ACTIONS_ONLY": "0",
         "JARVIS_CONFIRM_ACTIONS": "1",
+        "JARVIS_WEB_SEARCH": "1",
         "JARVIS_REMOTE_SYSTEM_CONTROL": "0",
         # Aucun modèle n'est chargé pendant les tests.
         "JARVIS_TTS_ENGINE": "off",
@@ -33,6 +34,10 @@ os.environ.update(
         "GOOGLE_TIMEZONE": "Europe/Paris",
         "GOOGLE_FORGET_TOKEN_ON_EXIT": "0",
         "JARVIS_CONTACTS_FILE": str(_TMP / "contacts.json"),
+        # Les réglages personnels du .env ne doivent pas influencer les tests.
+        "JARVIS_STT_VOCABULARY": "",
+        "JARVIS_WAKE_WORD": "jarvis",
+        "JARVIS_ALLOWED_ORIGINS": "",
         "ALARM_NOTIFICATION_ENABLED": "0",
         "ALARM_SOUND_ENABLED": "0",
     }

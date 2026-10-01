@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hmac
 import json
+import random
 import re
 import threading
 from contextlib import asynccontextmanager
@@ -11,11 +13,12 @@ import config  # noqa: F401  (premier import local : charge le .env avant les au
 import events
 import llm
 import voice
+import web_search
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from alarms import AlarmStore
@@ -38,6 +41,7 @@ from calendar_actions import (
     handle_events_week,
 )
 from config import (
+    ACCESS_TOKEN,
     ALARM_NOTIFICATION_ENABLED,
     ALARM_SOUND_ENABLED,
     ALARM_SOUND_FILE,
@@ -52,6 +56,7 @@ from config import (
     REMOTE_SYSTEM_CONTROL,
     STRICT_ACTIONS_ONLY,
     WAKE_WORD,
+    WEB_SEARCH_ENABLED,
     env_flag,
 )
 from google_client import GoogleApiError, GoogleClient, GoogleConfigError
@@ -85,6 +90,9 @@ VERSION = "2.0.0"
 # Seules les pages servies depuis ce poste peuvent piloter l'API : Jarvis envoie des
 # mails et agit sur l'ordinateur, il ne doit pas obéir à un site web quelconque.
 LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+# En-têtes posés par un relais (Tailscale, proxy) : la requête vient alors d'un autre appareil.
+FORWARDING_HEADERS = {"x-forwarded-for", "x-forwarded-host", "forwarded", "tailscale-user-login"}
 LOCAL_CLIENTS = {"web", "hud", "local"}
 GOOGLE_ACTIONS = {
     "mail_resume",
@@ -99,7 +107,13 @@ GOOGLE_ACTIONS = {
 }
 # Actions qui modifient l'agenda ou la messagerie : le tableau de bord doit être relu ensuite.
 GOOGLE_WRITES = {"send_mail", "add_event", "delete_event", "delete_events_range"}
-CONFIRMABLE_ACTIONS = {"send_mail", "delete_events_range", "delete_alarms_all"}
+CONFIRMABLE_ACTIONS = {"send_mail", "delete_events_range", "delete_alarms_all", "web_search"}
+# Ce que Jarvis dit pendant qu'il interroge le web.
+SEARCH_NOTICES = [
+    "Un instant, {t}, je consulte le réseau.",
+    "Je me renseigne, {t}.",
+    "Je cherche cela pour vous, {t}.",
+]
 MAX_STT_BYTES = 4 * 1024 * 1024
 
 OUT_OF_SCOPE_REPLY = (
@@ -110,8 +124,8 @@ OUT_OF_SCOPE_REPLY = (
 
 CAPABILITIES_REPLY = (
     f"Je gère votre messagerie, votre agenda, vos alarmes et vos minuteurs, {TITLE}. "
-    "Je pilote ce poste — applications, volume, recherches — et je vous renseigne sur l'heure, "
-    "la météo et l'état des systèmes. Pour le reste, je suis toujours disposé à converser. "
+    "Je pilote ce poste — applications, volume — et je vous renseigne sur l'heure, la météo et "
+    "l'état des systèmes. Je cherche sur le web ce que j'ignore, et pour le reste, je suis toujours disposé à converser. "
     "Dites « aide » pour la liste des commandes."
 )
 
@@ -190,6 +204,39 @@ def _allowed_hosts() -> list[str]:
     return sorted(hosts)
 
 
+def is_remote_request(headers: dict) -> bool:
+    """Vrai si la requête ne vient pas directement de ce poste (autre nom d'hôte, ou relayée)."""
+    host = headers.get("host", "").rsplit(":", 1)[0].lower()
+    return host not in LOCAL_HOSTS or any(name in headers for name in FORWARDING_HEADERS)
+
+
+class RemoteAccessGuard:
+    """Exige le code d'accès (JARVIS_ACCESS_TOKEN) pour tout appel à l'API venu d'un autre appareil.
+
+    Le HUD lui-même (fichiers statiques) reste accessible : il ne contient rien de personnel,
+    et c'est lui qui demande le code avant de parler à l'API.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith("/api/"):
+            headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
+            if is_remote_request(headers):
+                supplied = headers.get("x-jarvis-token", "")
+                if not ACCESS_TOKEN:
+                    problem = (403, "Accès à distance désactivé : lancez ./run_jarvis.sh phone sur le Mac.")
+                elif not hmac.compare_digest(supplied.encode(), ACCESS_TOKEN.encode()):
+                    problem = (401, "Code d'accès requis.")
+                else:
+                    problem = None
+                if problem:
+                    await JSONResponse({"detail": problem[1]}, status_code=problem[0])(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(title="Jarvis API", version=VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
@@ -197,8 +244,9 @@ app.add_middleware(
     allow_origin_regex=LOCAL_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Jarvis-Token"],
 )
+app.add_middleware(RemoteAccessGuard)
 # Refuse les requêtes adressées à un autre nom d'hôte (protection contre le DNS rebinding).
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts())
 
@@ -368,11 +416,25 @@ def _execute(action_payload: dict) -> dict:
     return _response(reply, action_name, source)
 
 
-def resolve(request: ChatRequest) -> tuple[Optional[dict], str]:
+def _is_remote(request: ChatRequest) -> bool:
+    return request.client.lower() not in LOCAL_CLIENTS
+
+
+def _guarded(request: ChatRequest, action_payload: dict) -> dict:
+    """Exécute une action, sauf si elle pilote le poste et vient d'un client distant."""
+    action_name = action_payload.get("action")
+    if action_name in SYSTEM_CONTROL_ACTIONS and _is_remote(request) and not REMOTE_SYSTEM_CONTROL:
+        reply = Reply(text=f"Le pilotage du poste n'est possible que depuis le poste lui-même, {TITLE}.")
+        return _response(reply, action_name)
+    return _execute(action_payload)
+
+
+def resolve(request: ChatRequest) -> tuple[Optional[dict], Optional[dict]]:
     """Traite tout ce qui ne demande pas le modèle de langage.
 
-    Retourne (réponse, "") si un module a répondu, sinon (None, texte) : le texte
-    doit alors être transmis au modèle pour une réponse conversationnelle.
+    Retourne (réponse, None) si un module a répondu. Sinon (None, plan) : la demande
+    revient au modèle, et le plan précise s'il faut d'abord chercher sur le web
+    ({"text": ..., "search": bool, "query": requête éventuelle}).
     """
     text = request.message.strip()
 
@@ -383,37 +445,40 @@ def resolve(request: ChatRequest) -> tuple[Optional[dict], str]:
         if decision == "yes":
             params = dict(pending.get("params") or {})
             params.pop("confirm", None)
-            return _execute({"action": pending["action"], "params": params}), ""
+            return _guarded(request, {"action": pending["action"], "params": params}), None
         if decision == "no":
-            return _response(Reply(text=f"Très bien, {TITLE}. Je n'en fais rien."), "cancelled"), ""
+            return _response(Reply(text=f"Très bien, {TITLE}. Je n'en fais rien."), "cancelled"), None
 
     # 2) Action reconnue par le routeur d'intentions.
     fallback_email = extract_recent_email_from_history(request.history)
     action_payload = detect_action(text, fallback_email=fallback_email)
+    search_plan = None
 
-    if action_payload is not None:
-        action_name = action_payload.get("action")
-        is_remote = request.client.lower() not in LOCAL_CLIENTS
-        if action_name in SYSTEM_CONTROL_ACTIONS and is_remote and not REMOTE_SYSTEM_CONTROL:
-            reply = Reply(text=f"Le pilotage du poste n'est possible que depuis le poste lui-même, {TITLE}.")
-            return _response(reply, action_name), ""
-
+    if action_payload is not None and action_payload.get("action") == "web_answer":
+        # Jarvis cherche lui-même : la réponse sera rédigée par le modèle à partir des résultats.
+        search_plan = {"text": text, "search": True, "query": (action_payload.get("params") or {}).get("query")}
+    elif action_payload is not None:
         if not CONFIRM_ACTIONS and isinstance(action_payload.get("params"), dict):
             action_payload["params"].pop("confirm", None)
-        return _execute(action_payload), ""
+        return _guarded(request, action_payload), None
 
     # 3) Demandes d'aide.
     support_kind = classify_support_request(text)
     if support_kind == "commands":
-        return _response(run_action({"action": "help"}), "help"), ""
+        return _response(run_action({"action": "help"}), "help"), None
     if support_kind == "capabilities":
-        return _response(Reply(text=CAPABILITIES_REPLY)), ""
+        return _response(Reply(text=CAPABILITIES_REPLY)), None
 
     # 4) Conversation : réservée au modèle, sauf en mode strict.
-    if STRICT_ACTIONS_ONLY:
-        return _response(Reply(text=OUT_OF_SCOPE_REPLY)), ""
+    if STRICT_ACTIONS_ONLY and search_plan is None:
+        return _response(Reply(text=OUT_OF_SCOPE_REPLY)), None
 
     model_online, _reason = llm.ollama_status()
+    if search_plan is not None and (not model_online or not WEB_SEARCH_ENABLED):
+        # Recherche désactivée, ou pas de modèle pour rédiger la réponse : Jarvis ouvre
+        # simplement la recherche dans le navigateur.
+        query = search_plan["query"] or web_search.clean_query(text)
+        return _guarded(request, {"action": "web_search", "params": {"query": query, "engine": "web"}}), None
     if not model_online:
         reply = Reply(
             text=(
@@ -426,9 +491,69 @@ def resolve(request: ChatRequest) -> tuple[Optional[dict], str]:
                 "Mes autres modules restent opérationnels."
             ),
         )
-        return _response(reply), ""
+        return _response(reply), None
 
-    return None, text
+    return None, search_plan or {"text": text, "search": False, "query": None}
+
+
+def converse(request: ChatRequest, plan: dict) -> Iterator[dict]:
+    """Fait répondre le modèle, en cherchant d'abord sur le web si la question le demande.
+
+    Produit des événements : {"type": "sentence"}, {"type": "status"}, {"type": "sources"}
+    et {"type": "pending"}. La recherche est décidée soit par le routeur (plan["search"]),
+    soit par le modèle lui-même, qui appelle alors l'outil recherche_web.
+    """
+    text = plan["text"]
+    history = request.history
+    context = live_context(dashboard, text)
+    tools_ok = WEB_SEARCH_ENABLED and llm.supports_tools()
+    notice = {"type": "sentence", "text": random.choice(SEARCH_NOTICES).format(t=TITLE)}
+    query = plan.get("query")
+
+    if plan.get("search"):
+        yield {"type": "status", "label": "Recherche web"}
+        yield notice
+        if not query:
+            query = (llm.search_query(history, text, context) if tools_ok else None) or web_search.clean_query(text)
+    else:
+        spoke = False
+        stream = llm.chat_stream(
+            history,
+            text,
+            request.temperature,
+            f"{llm.TOOLS_HINT}\n\n{context}" if tools_ok else context,
+            tools=[llm.WEB_TOOL] if tools_ok else None,
+        )
+        for item in stream:
+            if isinstance(item, llm.ToolCall):
+                query = str(item.arguments.get("requete") or "").strip() or web_search.clean_query(text)
+                yield {"type": "status", "label": "Recherche web"}
+                if not spoke:
+                    yield notice
+                break
+            spoke = True
+            yield {"type": "sentence", "text": item}
+        if not query:
+            return
+
+    try:
+        results = web_search.gather(query)
+    except web_search.WebSearchError as exc:
+        print(f"[WEB] Recherche impossible ({query}): {exc}", flush=True)
+        if _is_remote(request) and not REMOTE_SYSTEM_CONTROL:
+            yield {"type": "sentence", "text": f"Le réseau de recherche ne répond pas pour le moment, {TITLE}."}
+        else:
+            yield {
+                "type": "sentence",
+                "text": f"Le réseau de recherche ne répond pas, {TITLE}. Dois-je ouvrir la recherche dans votre navigateur ?",
+            }
+            yield {"type": "pending", "pending": {"action": "web_search", "params": {"query": query, "engine": "web"}}}
+        return
+
+    yield {"type": "sources", "query": query, "sources": web_search.sources(results)}
+    answer_context = f"{context}\n\n{web_search.format_for_model(query, results)}\n\n{llm.WEB_ANSWER_RULES}"
+    for sentence in llm.chat_stream(history, text, request.temperature, answer_context):
+        yield {"type": "sentence", "text": sentence}
 
 
 def _llm_error(exc: Exception) -> dict:
@@ -452,6 +577,7 @@ def api_status() -> dict:
         "model_reason": model_reason,
         "model_name": OLLAMA_MODEL,
         "strict": STRICT_ACTIONS_ONLY,
+        "web_search": WEB_SEARCH_ENABLED,
         "mail": mail_client.status(),
         "voice": {"tts": voice.tts_status(), "stt": voice.stt_status()},
     }
@@ -461,6 +587,13 @@ def api_status() -> dict:
 def api_commands() -> dict:
     """Expose la liste des commandes supportées par l'API."""
     return {"commands_help": COMMAND_HELP}
+
+
+@app.post("/api/warmup")
+def api_warmup() -> dict:
+    """Garde le modèle en mémoire tant que le HUD est ouvert (appelé toutes les 10 minutes)."""
+    threading.Thread(target=llm.keep_warm, daemon=True, name="jarvis-keep-warm").start()
+    return {"ok": True}
 
 
 @app.get("/api/system")
@@ -543,34 +676,49 @@ def api_alarms() -> dict:
 @app.post("/api/chat", response_model=ChatResponse)
 def api_chat(request: ChatRequest) -> ChatResponse:
     """Point d'entrée principal: exécute une action ou converse via le modèle."""
-    response, text = resolve(request)
+    response, plan = resolve(request)
     if response is not None:
         return ChatResponse(**response)
 
-    try:
-        answer = llm.chat(request.history, text, request.temperature, live_context(dashboard, text))
-        return ChatResponse(reply=answer, speech=answer, source="ollama")
-    except Exception as exc:
-        return ChatResponse(**_llm_error(exc))
+    final: dict = {}
+    for line in _chat_events(request, plan):
+        final = json.loads(line)
+    final.pop("type", None)
+    final.pop("streamed", None)
+    # Sans interface pour les afficher, les sources sont ajoutées au texte (Discord).
+    found = (final.get("data") or {}).get("sources") or []
+    if found:
+        final["reply"] += "\nSources : " + ", ".join(source["url"] for source in found)
+    return ChatResponse(**final)
 
 
-def _chat_events(request: ChatRequest) -> Iterator[str]:
+def _chat_events(request: ChatRequest, plan: Optional[dict] = None) -> Iterator[str]:
     """Produit la réponse au format NDJSON : les phrases du modèle arrivent une à une."""
 
     def line(payload: dict) -> str:
         return json.dumps(payload, ensure_ascii=False) + "\n"
 
-    response, text = resolve(request)
-    if response is not None:
-        yield line({"type": "final", **response})
-        return
+    if plan is None:
+        response, plan = resolve(request)
+        if response is not None:
+            yield line({"type": "final", **response})
+            return
 
     yield line({"type": "start", "source": "ollama"})
     sentences: list[str] = []
+    data: dict = {}
+    pending = None
     try:
-        for sentence in llm.chat_stream(request.history, text, request.temperature, live_context(dashboard, text)):
-            sentences.append(sentence)
-            yield line({"type": "sentence", "text": sentence})
+        for event in converse(request, plan):
+            if event["type"] == "sentence":
+                sentences.append(event["text"])
+                yield line(event)
+            elif event["type"] == "sources":
+                data = {"sources": event["sources"], "query": event["query"]}
+            elif event["type"] == "pending":
+                pending = event["pending"]
+            else:
+                yield line(event)
     except Exception as exc:
         if not sentences:
             yield line({"type": "final", **_llm_error(exc)})
@@ -578,7 +726,18 @@ def _chat_events(request: ChatRequest) -> Iterator[str]:
         print(f"[LLM] Flux interrompu: {exc}", flush=True)
 
     answer = " ".join(sentences)
-    yield line({"type": "final", "reply": answer, "speech": answer, "source": "ollama", "streamed": True})
+    yield line(
+        {
+            "type": "final",
+            "reply": answer,
+            "speech": answer,
+            "action": "web_answer" if data else None,
+            "source": "web" if data else "ollama",
+            "pending": pending,
+            "data": data or None,
+            "streamed": True,
+        }
+    )
 
 
 @app.post("/api/chat/stream")
@@ -619,9 +778,18 @@ async def api_stt(request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+class HudFiles(StaticFiles):
+    """Fichiers du HUD, toujours revalidés : une mise à jour est visible au premier rechargement."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Le HUD est servi par l'API elle-même : une seule adresse à ouvrir (http://localhost:8001/).
 if INTERFACE_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(INTERFACE_DIR), html=True), name="hud")
+    app.mount("/", HudFiles(directory=str(INTERFACE_DIR), html=True), name="hud")
 
 
 if __name__ == "__main__":

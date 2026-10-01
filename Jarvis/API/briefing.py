@@ -234,7 +234,10 @@ def live_context(dashboard: Dashboard, message: str) -> str:
     a tendance à réciter tout ce qu'on lui donne.
     """
     now = datetime.now(dashboard.google.timezone)
-    lines = [f"Contexte en direct : nous sommes le {format_date(now)} {now.year}, il est {format_time(now)}."]
+    lines = [
+        f"Contexte en direct : nous sommes le {format_date(now)} {now.year}, il est {format_time(now)}. "
+        f"Ville de l'utilisateur : {CITY}."
+    ]
 
     folded = strip_accents((message or "").lower())
     wants_agenda = bool(_AGENDA_HINTS.search(folded))

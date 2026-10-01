@@ -100,6 +100,7 @@ Points cles:
 - le modèle ne déclenche jamais d'action : s'il prétend en avoir exécuté une, sa réponse est remplacée (`llm.py`)
 - les envois de mail et les suppressions en masse demandés en langage naturel passent par une confirmation
 - la voix est locale : synthèse Piper (ou `say` sur macOS), reconnaissance Whisper (`voice.py`)
+- Jarvis cherche lui-même sur le web quand une question le demande, et répond à partir des pages lues (`web_search.py`)
 - les alarmes sont annoncées à voix haute, par le HUD s'il est ouvert, sinon par l'API (`alarm_actions.py`, `events.py`)
 - l'API n'accepte que les requêtes de ce poste (`main.py`)
 

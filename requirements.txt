@@ -12,3 +12,6 @@ google-auth-oauthlib
 
 # Bot Discord
 discord.py
+
+# Appairage du téléphone (QR code du lien d'accès)
+segno

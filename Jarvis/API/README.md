@@ -9,6 +9,7 @@ Ce dossier regroupe la logique serveur de Jarvis:
 - la persona (ton, dates en français, version orale des réponses)
 - le client du modèle de langage (Ollama)
 - la voix (synthèse et reconnaissance locales)
+- la recherche sur le web (Jarvis cherche et répond lui-même)
 - la logique métier des mails, du calendrier et des alarmes
 - le pilotage du poste (diagnostic, applications, volume, web, veille)
 - la météo, le briefing et le tableau de bord du HUD
@@ -24,7 +25,10 @@ HUD (voix ou clavier) ──► POST /api/chat/stream
                               ├─ 2. intention reconnue ? (intents.py) ──► module métier ──► Reply
                               ├─ 3. demande d'aide ? (commandes / capacités)
                               └─ 4. sinon : conversation ──► llm.py ──► Ollama (phrases en flux)
+                                     └─ recherche web si nécessaire ──► web_search.py ──► réponse rédigée
 ```
+
+Une recherche web est lancée dans deux cas : le routeur reconnaît une question d'information (« horaires », « prix », « qui a gagné », « cherche … »), ou le modèle décide lui-même d'appeler l'outil `recherche_web`. Dans les deux cas, Jarvis prévient, cherche, lit les pages, puis le modèle rédige la réponse à partir des résultats.
 
 Chaque module métier renvoie un objet `Reply` :
 
@@ -33,7 +37,7 @@ Chaque module métier renvoie un objet `Reply` :
 - `data` : données structurées pour le HUD
 - `pending` : action en attente d'une confirmation (`{"action": ..., "params": ...}`)
 
-Le modèle de langage ne déclenche jamais d'action : il ne sert qu'à converser et à rédiger les mails. Les actions sont exécutées par le code, de façon déterministe.
+Le modèle de langage ne déclenche jamais d'action : il ne sert qu'à converser, à rédiger les mails et à demander une recherche web. Les actions sont exécutées par le code, de façon déterministe.
 
 ## Routes HTTP
 
@@ -48,6 +52,7 @@ Le modèle de langage ne déclenche jamais d'action : il ne sert qu'à converser
 | `/api/system` | GET | relevé du poste : processeur, mémoire, disque, batterie, alertes |
 | `/api/dashboard` | GET | météo, agenda du jour, messages non lus, alarmes |
 | `/api/briefing` | GET | briefing prononcé par Jarvis (`kind=boot` ou `kind=full`) |
+| `/api/warmup` | POST | garde le modèle en mémoire (appelé par le HUD toutes les 10 minutes) |
 | `/api/events` | GET | événements proactifs (alarmes) depuis le dernier relevé |
 | `/api/alarms` | GET | alarmes actives |
 | `/api/commands` | GET | aide des commandes |
@@ -80,7 +85,7 @@ Réponse (`/api/chat`, ou événement `final` du flux) :
 
 Le client renvoie `pending` tel quel avec le message suivant : « oui » exécute l'action, « non » l'annule, toute autre phrase l'abandonne.
 
-Événements du flux : `{"type": "start"}`, puis `{"type": "sentence", "text": "..."}` pour chaque phrase du modèle, puis `{"type": "final", ...}`. Une action reconnue ne produit qu'un événement `final`.
+Événements du flux : `{"type": "start"}`, puis `{"type": "sentence", "text": "..."}` pour chaque phrase du modèle, puis `{"type": "final", ...}`. Une action reconnue ne produit qu'un événement `final`. Pendant une recherche web, un événement `{"type": "status", "label": "Recherche web"}` précède les phrases, et l'événement `final` porte les pages consultées dans `data.sources`.
 
 ## Vue d'ensemble des fichiers
 
@@ -94,17 +99,25 @@ Le client renvoie `pending` tel quel avec le message suivant : « oui » exécut
 | `lifespan(app)` | démarre le scheduler d'alarmes, précharge le modèle et la voix ; à l'arrêt, supprime le token Google (sauf `GOOGLE_FORGET_TOKEN_ON_EXIT=0`) |
 | `run_action(action_payload)` | redirige une action vers le bon module et renvoie un `Reply` |
 | `_execute(action_payload)` | exécute l'action et traduit les erreurs Google dans le ton de Jarvis |
-| `resolve(request)` | traite tout ce qui ne demande pas le modèle : confirmation, action, aide, mode strict, modèle hors ligne |
+| `resolve(request)` | traite tout ce qui ne demande pas le modèle : confirmation, action, aide, mode strict, modèle hors ligne ; sinon renvoie un plan (conversation, avec ou sans recherche web) |
+| `converse(request, plan)` | fait répondre le modèle ; lance la recherche web si le plan le demande ou si le modèle appelle l'outil, puis lui fait rédiger la réponse à partir des résultats |
+| `_guarded(request, action_payload)` | exécute une action, sauf si elle pilote le poste et vient d'un client distant |
+| `HudFiles` | sert le HUD avec `Cache-Control: no-cache` : une mise à jour est visible au premier rechargement |
+| `is_remote_request(headers)` | vrai si la requête ne vient pas directement du Mac (autre nom d'hôte, ou en-têtes de relais) |
+| `RemoteAccessGuard` | exige le code d'accès des autres appareils sur `/api/*` ; le HUD lui-même reste servi |
 | `classify_support_request(text)` | détecte « aide » / « commandes » et « que peux-tu faire » |
 | `_chat_events(request)` | produit le flux NDJSON de `/api/chat/stream` |
 | `_allowed_hosts()` | noms d'hôte acceptés par l'API |
 
 Règles appliquées:
 
+- un appel à l'API venu d'un autre appareil (autre nom d'hôte, ou requête relayée par Tailscale) doit présenter le code d'accès `X-Jarvis-Token` (`RemoteAccessGuard`) ; sans `JARVIS_ACCESS_TOKEN`, l'accès à distance est refusé
 - les actions Google sont refusées poliment tant que le compte n'est pas relié (aucun brouillon n'est rédigé pour rien)
 - les actions de pilotage du poste (`SYSTEM_CONTROL_ACTIONS`) sont refusées aux clients distants (`client: "discord"`) sauf `JARVIS_REMOTE_SYSTEM_CONTROL=1`
 - `JARVIS_CONFIRM_ACTIONS=0` désactive les confirmations
 - `JARVIS_STRICT_ACTIONS_ONLY=1` refuse toute demande qui n'est pas une action
+- `JARVIS_WEB_SEARCH=0` coupe la recherche web : l'outil n'est plus proposé au modèle et « cherche … » ouvre le navigateur
+- si la recherche échoue, Jarvis propose d'ouvrir le navigateur (confirmation par « oui ») ; jamais pour un client distant
 - si le modèle est hors ligne, les modules (agenda, mail, alarmes, poste) restent disponibles
 - CORS limité à `localhost` (+ `JARVIS_ALLOWED_ORIGINS`) et en-tête `Host` vérifié
 
@@ -115,6 +128,8 @@ Règles appliquées:
 | Fonction | Rôle |
 |---|---|
 | `env_str`, `env_flag`, `env_int`, `env_float`, `env_list` | lecture typée et bornée d'une variable d'environnement |
+| `ACCESS_TOKEN` | code exigé des autres appareils (`JARVIS_ACCESS_TOKEN`) |
+| `load_contacts()` | carnet d'adresses `contacts.json` (nom → email) |
 
 Tous les modules lisent leur configuration ici : lire `os.getenv` à l'import d'un autre module ferait ignorer le `.env`.
 
@@ -150,7 +165,8 @@ Tous les modules lisent leur configuration ici : lire `os.getenv` à l'import d'
 | `_parse_natural_calendar(text)` | calendrier : création, liste, disponibilités, suppression |
 | `_parse_mail_reading(text)` | lecture de la messagerie (résumé, dernier mail) |
 | `_parse_info(text)` | heure, date, météo, briefing |
-| `_parse_system(text)` | diagnostic, volume, veille, recherche web, ouverture/fermeture d'applications et de sites |
+| `_parse_web_question(text)` | questions à chercher sur le web : « cherche … », horaires, prix, actualité, résultats, commerces de proximité (sauf ses propres données : « mes mails », « mon agenda ») |
+| `_parse_system(text)` | diagnostic, volume, veille, recherche à ouvrir dans le navigateur, ouverture/fermeture d'applications et de sites |
 
 Aides de parsing:
 
@@ -163,7 +179,7 @@ Aides de parsing:
 | `_strip_time_expressions(text)` | retire les indications de temps pour isoler un titre |
 | `_extract_alarm_title`, `_event_title` | titre d'une alarme ou d'un événement (« Réunion avec Sophie ») |
 | `_extract_mail_subject`, `_extract_mail_body` | objet et corps d'un mail |
-| `_find_contact(text)`, `load_contacts()` | carnet d'adresses `contacts.json` (nom → email) |
+| `_find_contact(text)` | retrouve un contact du carnet d'adresses `contacts.json` (nom → email) |
 | `_normalize_spoken_email(text)` | adresse dictée (« paul arobase exemple point com ») |
 | `_extract_city(text)` | ville d'une demande météo |
 
@@ -171,21 +187,51 @@ Les demandes en langage naturel qui envoient un mail ou suppriment en masse port
 
 ### `llm.py`
 - **Role**: client Ollama.
-- **Responsabilite**: état du modèle, conversation, garde-fous de la persona.
+- **Responsabilite**: état du modèle, conversation, outil de recherche, garde-fous de la persona.
 
 | Fonction | Rôle |
 |---|---|
 | `load_system_prompt()` | charge `system_prompt.txt` et y inscrit la formule d'appel |
 | `ollama_status()` | vérifie qu'Ollama répond et que le modèle existe |
 | `build_messages(history, message, context)` | prompt système + contexte en direct + historique récent |
-| `chat(history, message, temperature, context)` | réponse complète |
-| `chat_stream(history, message, temperature, context)` | réponse phrase par phrase, pour parler sans attendre la fin |
+| `chat_stream(history, message, temperature, context, tools=None)` | réponse phrase par phrase, pour parler sans attendre la fin ; se termine par un `ToolCall` si le modèle appelle un outil |
+| `supports_tools()` | indique si le modèle sait appeler des outils (sinon, seul le routeur déclenche les recherches) |
+| `search_query(history, message, context)` | fait formuler par le modèle la requête d'une recherche déjà décidée (ajoute la ville pour un service de proximité) |
+| `WEB_TOOL`, `TOOLS_HINT`, `WEB_ANSWER_RULES` | définition de l'outil `recherche_web` et consignes : quand chercher, comment répondre à partir des résultats |
 | `split_sentences(buffer)` | découpe le flux en phrases complètes (sans couper « J.A.R.V.I.S. » ou « M. ») |
+| `first_clause(buffer)` | pour parler plus tôt, dit une longue première phrase en deux temps, à partir d'une virgule |
+| `keep_warm()` | charge le modèle en mémoire, ou l'y maintient, sans rien générer |
 | `claims_unexecuted_action(user_message, reply)` | détecte un modèle qui prétend avoir exécuté une action |
 | `complete(system, prompt, ...)` | génération ponctuelle (objet et corps des mails) |
 | `warm_up()` | charge le modèle en mémoire au démarrage |
 
 Si le modèle affirme « j'ai envoyé… » alors qu'aucun module n'a rien exécuté, sa réponse est remplacée par une demande de reformulation.
+
+### `web_search.py`
+- **Role**: recherche sur le web, sans clé d'API.
+- **Responsabilite**: interroger le moteur (DuckDuckGo), lire les premières pages, en extraire les passages utiles.
+
+| Fonction | Rôle |
+|---|---|
+| `search(query)` | interroge le moteur et renvoie les premiers résultats (titre, adresse, extrait) |
+| `parse_results(page)` | lit la page de résultats ; écarte les publicités et sort l'adresse réelle des redirections |
+| `fetch_page(url)` | télécharge une page publique : taille bornée, redirections suivies à la main et revalidées |
+| `is_public_url(url)` | refuse le réseau local, les adresses internes et tout ce qui n'est pas http(s) |
+| `extract_passages(page, query)` | garde le texte visible, puis les lignes en rapport avec la question et leur voisinage (une ligne de tableau reste sur une ligne : « Lundi 09:00 à 21:00 ») |
+| `gather(query)` | recherche + lecture en parallèle des trois premières pages, avec délai global et cache de 5 min |
+| `format_for_model(query, results)` | met les résultats en forme pour le modèle |
+| `sources(results)` | pages affichées en liens dans le HUD |
+| `clean_query(text)` | « cherche … sur internet » → requête |
+
+Le texte des pages est un contenu non fiable : il est passé au modèle comme une donnée, avec la consigne de n'obéir à aucune instruction qu'il contiendrait, et le modèle ne peut de toute façon déclencher aucune action.
+
+### `phone_setup.py`
+- **Role**: préparer l'accès depuis le téléphone (appelé par `./run_jarvis.sh phone`).
+
+| Fonction | Rôle |
+|---|---|
+| `ensure_phone_settings(dns_name, env_file)` | crée le code d'accès s'il manque et autorise l'adresse Tailscale dans `.env` ; renvoie le code |
+| `show_qr(link)` | affiche le lien d'appairage en QR code (terminal et écran) |
 
 ### `voice.py`
 - **Role**: la voix de Jarvis, en local.
@@ -195,14 +241,17 @@ Si le modèle affirme « j'ai envoyé… » alors qu'aucun module n'a rien exéc
 |---|---|
 | `PiperEngine` | voix neuronale Piper (`Jarvis/API/voices/<voix>.onnx`) |
 | `SayEngine` | voix système de macOS ; choisit la meilleure voix française installée |
-| `WhisperEngine` | reconnaissance avec faster-whisper ; décode le WAV, filtre le silence et les hallucinations |
+| `MlxWhisperEngine` | reconnaissance sur la puce graphique des Mac Apple Silicon (mlx-whisper, large-v3-turbo par défaut : environ 0,35 s par phrase) |
+| `WhisperEngine` | reconnaissance avec faster-whisper sur le processeur (small par défaut : environ 1 s) ; décode le WAV, filtre le silence et les hallucinations |
 | `tts_engine()`, `stt_engine()` | moteur actif selon `JARVIS_TTS_ENGINE` / `JARVIS_STT_ENGINE` |
 | `tts_status()`, `stt_status()` | état pour `/api/status` |
 | `prepare_tts_text(text)` | adapte un texte à la voix (« 7 h 30 » → « 7 heures 30 », « °C » → « degrés ») |
 | `synthesize(text)` | texte → WAV (avec un petit cache) |
 | `speak_local(text)` | fait parler Jarvis sur les haut-parleurs du poste, sans HUD |
 | `extract_command(text)` | repère « Jarvis » (et ses graphies proches) et isole l'ordre |
+| `stt_vocabulary()` | noms propres fournis à Whisper : prénom d'activation, ville, `JARVIS_STT_VOCABULARY`, contacts |
 | `transcribe(data)` | WAV → `{text, wake, command}` |
+| `prepare_stt()` | télécharge et charge le modèle de reconnaissance (utilisé par `./run_jarvis.sh setup`) |
 | `preload()` | charge les modèles vocaux au démarrage |
 
 En mode `auto` : Piper, sinon `say` (macOS), sinon le HUD utilise la voix du navigateur ; Whisper, sinon la reconnaissance du navigateur.
@@ -215,7 +264,7 @@ En mode `auto` : Piper, sinon `say` (macOS), sinon le HUD utilise la voix du nav
 |---|---|
 | `Dashboard` | rassemble météo, agenda du jour, messages non lus et alarmes (cache de 90 s pour Google) |
 | `build_briefing(dashboard, kind)` | « Bonjour, Monsieur. Il est… » : version courte (`boot`) ou complète (`full`) |
-| `live_context(dashboard, message)` | contexte transmis au modèle : date et heure, plus agenda / météo / messagerie / état du poste si la question s'y rapporte |
+| `live_context(dashboard, message)` | contexte transmis au modèle : date, heure et ville, plus agenda / météo / messagerie / état du poste si la question s'y rapporte |
 
 ### `system_actions.py`
 - **Role**: capteurs et pilotage du poste.
@@ -344,6 +393,7 @@ Exceptions : `GoogleConfigError` (configuration), `GoogleApiError` (erreur à l'
 | `persona.py` | `config.py` |
 | `intents.py` | `persona.py`, `config.py` |
 | `llm.py` | `persona.py`, `config.py` |
+| `web_search.py` | `persona.py`, `config.py` |
 | `voice.py` | `persona.py`, `config.py` |
 | `briefing.py` | `weather.py`, `system_actions.py`, `persona.py` |
 | `system_actions.py`, `weather.py` | `persona.py` |

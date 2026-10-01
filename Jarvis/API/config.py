@@ -7,6 +7,7 @@ Tous les autres modules doivent lire leur configuration ici, jamais via os.geten
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -80,6 +81,9 @@ LLM_HISTORY_MESSAGES = env_int("JARVIS_HISTORY_MESSAGES", 12, 0, 60)
 STRICT_ACTIONS_ONLY = env_flag("JARVIS_STRICT_ACTIONS_ONLY", False)
 # Demande une confirmation avant les actions sensibles (envoi de mail, suppressions en masse).
 CONFIRM_ACTIONS = env_flag("JARVIS_CONFIRM_ACTIONS", True)
+# 1 (défaut) : Jarvis cherche lui-même sur le web (DuckDuckGo) et lit les pages pour répondre.
+# 0 : rien ne sort du poste ; il se contente d'ouvrir la recherche dans le navigateur.
+WEB_SEARCH_ENABLED = env_flag("JARVIS_WEB_SEARCH", True)
 
 # ── Serveur ────────────────────────────────────────────────────────────────
 HOST = env_str("JARVIS_HOST", "127.0.0.1")
@@ -88,6 +92,8 @@ PORT = env_int("JARVIS_PORT", 8001, 1, 65535)
 EXTRA_ALLOWED_ORIGINS = env_list("JARVIS_ALLOWED_ORIGINS", [])
 # Clients distants (ex: Discord) autorisés à piloter le poste (applications, volume, veille).
 REMOTE_SYSTEM_CONTROL = env_flag("JARVIS_REMOTE_SYSTEM_CONTROL", False)
+# Code exigé pour utiliser Jarvis depuis un autre appareil (téléphone). Vide = accès à distance refusé.
+ACCESS_TOKEN = env_str("JARVIS_ACCESS_TOKEN", "")
 
 # ── Voix ───────────────────────────────────────────────────────────────────
 # auto | piper | say | browser | off
@@ -97,11 +103,15 @@ TTS_RATE = env_float("JARVIS_TTS_RATE", 1.0, 0.5, 2.0)
 PIPER_VOICE = env_str("JARVIS_PIPER_VOICE", "fr_FR-tom-medium")
 VOICES_DIR = Path(env_str("JARVIS_VOICES_DIR", str(API_DIR / "voices"))).expanduser()
 
-# auto | whisper | browser | off
+# auto | mlx | whisper | browser | off
 STT_ENGINE = env_str("JARVIS_STT_ENGINE", "auto").lower()
-WHISPER_MODEL = env_str("JARVIS_WHISPER_MODEL", "small")
+# Vide = modèle par défaut du moteur : large-v3-turbo sur la puce graphique (mlx), small sur le processeur.
+WHISPER_MODEL = env_str("JARVIS_WHISPER_MODEL", "")
 STT_LANGUAGE = env_str("JARVIS_STT_LANGUAGE", "fr")
 WAKE_WORD = env_str("JARVIS_WAKE_WORD", "jarvis").lower()
+# Noms propres que la reconnaissance vocale doit savoir écrire (lieux, enseignes, prénoms…).
+# La ville et les contacts du carnet d'adresses y sont ajoutés automatiquement.
+STT_VOCABULARY = env_list("JARVIS_STT_VOCABULARY", [])
 
 # ── Alarmes ────────────────────────────────────────────────────────────────
 ALARM_NOTIFICATION_ENABLED = env_flag("ALARM_NOTIFICATION_ENABLED", True)
@@ -111,3 +121,14 @@ ALARM_SOUND_FILE = env_str("ALARM_SOUND_FILE", "")
 
 # ── Carnet d'adresses (nom → email) pour dicter un destinataire à la voix ──
 CONTACTS_FILE = Path(env_str("JARVIS_CONTACTS_FILE", str(API_DIR / "contacts.json"))).expanduser()
+
+
+def load_contacts() -> dict[str, str]:
+    """Charge le carnet d'adresses (nom → email) utilisé pour dicter un destinataire."""
+    try:
+        data = json.loads(CONTACTS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(name).strip(): str(email).strip() for name, email in data.items() if "@" in str(email)}

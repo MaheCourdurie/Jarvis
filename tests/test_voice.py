@@ -1,4 +1,5 @@
 import io
+import json
 import wave
 
 import pytest
@@ -21,9 +22,12 @@ import voice
         ("Djarvis, mets une alarme à 7h30", True, "mets une alarme à 7h30"),
         ("Gervais, tu es là ?", True, "tu es là?"),
         ("J.A.R.V.I.S. lance le diagnostic", True, "lance le diagnostic"),
+        ("Jarvie, quelle heure est-il ?", True, "quelle heure est-il?"),
+        ("J'arvie, mets une alarme", True, "mets une alarme"),
         # Sans le prénom, la phrase n'est pas adressée à Jarvis.
         ("Il fait beau aujourd'hui.", False, "Il fait beau aujourd'hui."),
         ("Le service est fermé", False, "Le service est fermé"),
+        ("Je varie les plaisirs", False, "Je varie les plaisirs"),
     ],
 )
 def test_wake_word(heard, wake, command):
@@ -32,10 +36,18 @@ def test_wake_word(heard, wake, command):
 
 def test_text_is_prepared_for_speech():
     assert voice.prepare_tts_text("Il est 7 h 30, Monsieur.") == "Il est 7 heures 30, Monsieur."
+    assert voice.prepare_tts_text("Lundi 09:00 à 21:00, jeudi 08:30 à 21h.") == "Lundi 9 heures à 21 heures, jeudi 8 heures 30 à 21 heures."
     assert voice.prepare_tts_text("J.A.R.V.I.S. à 12 h, 18 °C") == "Jarvis à 12 heures, 18 degrés."
     assert voice.prepare_tts_text("Mémoire : 58 %") == "Mémoire : 58 pour cent."
     assert voice.prepare_tts_text("- **Point** [id: abc]\nVoir https://x.y/z") == "Point. Voir."
     assert len(voice.prepare_tts_text("mot " * 1000)) <= voice.MAX_TTS_CHARS
+
+
+def test_recognition_vocabulary_lists_proper_nouns(monkeypatch):
+    monkeypatch.setattr(voice, "CITY", "Colomiers")
+    monkeypatch.setattr(voice, "STT_VOCABULARY", ["Blagnac", "colomiers", "Toulouse"])
+    # Prénom d'activation, ville, vocabulaire personnel, puis contacts du carnet ; sans doublon.
+    assert voice.stt_vocabulary() == ["Jarvis", "Colomiers", "Blagnac", "Toulouse", "Paul", "Sophie Martin"]
 
 
 def test_whisper_hallucinations_are_dropped():
@@ -104,3 +116,66 @@ def test_history_is_trimmed_and_current_message_not_duplicated():
 
 def test_reply_is_cleaned():
     assert llm.clean_reply("J.A.R.V.I.S. : **Bien**, Monsieur.") == "Bien, Monsieur."
+
+
+# ── Réactivité ─────────────────────────────────────────────────────────────
+
+class _FakeStream:
+    """Réponse d'Ollama en flux : une ligne JSON par morceau de texte."""
+
+    def __init__(self, chunks):
+        self.lines = [json.dumps(chunk).encode() for chunk in chunks]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    def iter_lines(self):
+        return iter(self.lines)
+
+
+def _streamed(monkeypatch, pieces, final=None):
+    chunks = [{"message": {"content": piece}, "done": False} for piece in pieces]
+    chunks.append(final or {"message": {"content": ""}, "done": True})
+    monkeypatch.setattr(llm.requests, "post", lambda *args, **kwargs: _FakeStream(chunks))
+    return list(llm.chat_stream([], "Explique-moi un trou noir", 0.6))
+
+
+def test_long_first_sentence_starts_at_the_first_comma(monkeypatch):
+    pieces = ["Un trou noir est une région de l'espace ", "où la gravité est si intense, ", "que rien ne s'en échappe. ", "Voilà, Monsieur."]
+    assert _streamed(monkeypatch, pieces) == [
+        "Un trou noir est une région de l'espace où la gravité est si intense,",
+        "que rien ne s'en échappe.",
+        "Voilà, Monsieur.",
+    ]
+    # Une courte proposition attend la fin de la phrase : « Bien, » seul sonnerait mal.
+    assert llm.first_clause("Bien, Monsieur, je m'en occupe") == (None, "Bien, Monsieur, je m'en occupe")
+    assert llm.first_clause("Le prix est de 3,5 euros") == (None, "Le prix est de 3,5 euros")
+
+
+def test_stream_ends_with_the_tool_call(monkeypatch):
+    call = {"message": {"content": "", "tool_calls": [{"function": {"name": "recherche_web", "arguments": {"requete": "horaires Leclerc Blagnac"}}}]}, "done": False}
+    produced = _streamed(monkeypatch, [], final=call)
+    assert produced == [llm.ToolCall("recherche_web", {"requete": "horaires Leclerc Blagnac"})]
+
+
+def test_gpu_recognition_is_preferred_when_available(monkeypatch):
+    monkeypatch.setattr(voice, "STT_ENGINE", "auto")
+    monkeypatch.setattr(voice, "_stt_resolved", False)
+    monkeypatch.setattr(voice, "_stt_engine", None)
+    monkeypatch.setattr(voice.MlxWhisperEngine, "available", lambda self: True)
+    engine = voice.stt_engine()
+    assert (engine.name, engine.model_name, engine.repo) == ("mlx-whisper", "large-v3-turbo", "mlx-community/whisper-large-v3-turbo")
+    assert voice.MlxWhisperEngine("small").repo == "mlx-community/whisper-small-mlx"
+    # Sans puce Apple (ou sans mlx-whisper), faster-whisper prend le relais.
+    monkeypatch.setattr(voice, "_stt_resolved", False)
+    monkeypatch.setattr(voice.MlxWhisperEngine, "available", lambda self: False)
+    monkeypatch.setattr(voice.WhisperEngine, "available", lambda self: True)
+    assert (voice.stt_engine().name, voice.stt_engine().model_name) == ("whisper", "small")
+    monkeypatch.setattr(voice, "_stt_resolved", False)
+    monkeypatch.setattr(voice, "_stt_engine", None)
