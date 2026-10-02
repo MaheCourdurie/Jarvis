@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # On definit les chemins relatifs aux différents composants du projet pour faciliter les commandes ultérieures. Le script doit être lancé depuis la racine du projet (où il se trouve) pour que les chemins soient corrects.
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Chemin physique (pwd -P) : le service ne doit jamais passer par un lien posé sur le Bureau.
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_DIR="$ROOT_DIR/Jarvis"
 API_DIR="$PROJECT_DIR/API"
 INTERFACE_DIR="$PROJECT_DIR/Interface"
@@ -350,7 +351,7 @@ run_phone() {
   (cd "$API_DIR" && python phone_setup.py qr "$link")
   echo "$link"
   echo
-  echo "Relance Jarvis pour appliquer le réglage : ./run_jarvis.sh start (ou ./run_jarvis.sh service install)"
+  echo "Si le code d'accès vient d'être créé, relance Jarvis : ./run_jarvis.sh service restart (ou ./run_jarvis.sh start)"
   echo "Pour couper l'accès depuis le téléphone : $ts serve --https=443 off"
 }
 

@@ -5,10 +5,10 @@ Le mode d'emploi complet est dans le [README](README.md) ; ici, seulement ce qu'
 
 ## 1. Lancer Jarvis
 
-Sur ce Mac, tout est déjà installé (voir [section 6](#6-déjà-fait-sur-ce-mac)). Il suffit de :
+Sur ce Mac, Jarvis tourne en permanence (service installé, voir [section 6](#6-déjà-fait-sur-ce-mac)) : ouvre simplement `http://localhost:8001/`, ou lance :
 
 ```bash
-./run_jarvis.sh start
+./run_jarvis.sh start    # ouvre l'interface (et démarre Jarvis s'il ne tourne pas)
 ```
 
 1. Le HUD s'ouvre sur `http://localhost:8001/`.
@@ -16,9 +16,11 @@ Sur ce Mac, tout est déjà installé (voir [section 6](#6-déjà-fait-sur-ce-ma
 3. Autorise le micro quand le navigateur le demande.
 4. Dis : « Jarvis, tu es là ? »
 
-Pour l'arrêter : `Ctrl+C` dans le terminal.
+Le projet a été rangé dans `~/Developer/Jarvis` (un lien est resté à l'ancien emplacement, sur le Bureau) : macOS interdit aux services d'arrière-plan de lire le Bureau.
 
-Pour qu'il tourne en permanence (indispensable pour le téléphone) : `./run_jarvis.sh service install`. Attention : macOS interdit aux services d'arrière-plan de lire le Bureau ; tant que le projet est dans `~/Desktop`, le service refuse de s'installer (voir section 3).
+- Après une mise à jour du code ou du `.env` : `./run_jarvis.sh service restart`
+- Pour arrêter le service : `./run_jarvis.sh service remove` (puis `./run_jarvis.sh start` pour un lancement ponctuel)
+- Journal du service : `~/Library/Logs/Jarvis.log`
 
 Ollama doit tourner (l'application Ollama ouverte suffit ; sinon `ollama serve` dans un autre terminal).
 
@@ -62,8 +64,8 @@ Ces points n'ont pas pu être testés sans toi : ils demandent tes oreilles, ta 
   2. Allume Tailscale sur l'iPhone (il est déjà dans ton réseau, mais hors ligne).
   3. Scanne le QR code affiché sur le Mac ; le code d'accès est mémorisé par Safari.
   4. Touche **Initialiser**, autorise le micro, puis « Jarvis, tu es là ? ».
-  5. Pour qu'il réponde à tout moment : `./run_jarvis.sh service install` sur le Mac, une fois le projet sorti du Bureau.
-- [ ] **Sortir le projet du Bureau** (pour le service permanent) : par exemple `~/Developer/Jarvis`, puis recréer `.venv` (`python3 -m venv .venv && ./run_jarvis.sh setup`) et `./run_jarvis.sh service install`.
+  5. Le Mac doit être allumé et éveillé : un MacBook capot fermé est en veille, Jarvis ne répond plus.
+- [x] **Sortir le projet du Bureau** et installer le service : fait (`~/Developer/Jarvis`, environnement Python recréé).
 - [ ] **Carnet d'adresses** : `cp Jarvis/API/contacts.example.json Jarvis/API/contacts.json`, puis mets-y tes contacts. Tu pourras dire « envoie un mail à Paul… ».
 - [ ] **Bot Discord** : son code a été adapté (confirmations, pas de pilotage du Mac à distance) mais pas relancé, faute de token. À tester avec `python3 Discord/main.py`.
 
