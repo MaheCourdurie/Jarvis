@@ -515,7 +515,20 @@ def handle_volume(params: dict) -> Reply:
     )
 
 
-# ── Veille de l'écran ──────────────────────────────────────────────────────
+# ── Veille ─────────────────────────────────────────────────────────────────
+
+def keep_awake(mode: str) -> subprocess.Popen | None:
+    """Empêche le Mac de s'endormir tant que Jarvis tourne, pour qu'il réponde au téléphone.
+
+    « secteur » : seulement quand le Mac est branché ; « toujours » : sur batterie aussi.
+    caffeinate relâche la consigne de lui-même quand Jarvis s'arrête (-w).
+    """
+    flags = {"secteur": ["-s"], "toujours": ["-i", "-s"]}.get(mode)
+    if SYSTEM != "darwin" or not flags or not shutil.which("caffeinate"):
+        return None
+    command = ["caffeinate", *flags, "-w", str(os.getpid())]
+    return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
 
 def handle_sleep_display(params: dict | None = None) -> Reply:
     """Met l'écran en veille (verrouille la session si un mot de passe est exigé)."""

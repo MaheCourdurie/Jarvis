@@ -22,6 +22,10 @@ os.environ.update(
         "JARVIS_CONFIRM_ACTIONS": "1",
         "JARVIS_WEB_SEARCH": "1",
         "JARVIS_REMOTE_SYSTEM_CONTROL": "0",
+        # Les tests n'empêchent pas le Mac de se mettre en veille.
+        "JARVIS_KEEP_AWAKE": "0",
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_ALLOWED_USERS": "",
         # Aucun modèle n'est chargé pendant les tests.
         "JARVIS_TTS_ENGINE": "off",
         "JARVIS_STT_ENGINE": "off",

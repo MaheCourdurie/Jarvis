@@ -218,6 +218,19 @@ export class VoiceEngine {
     return this.serverStt ? this.startMic() : this.startBrowserRecognition();
   }
 
+  // Retour au premier plan : l'iPhone suspend le son et coupe le micro quand l'app passe en
+  // arrière-plan. On relance ce qui peut l'être ; le son peut attendre un toucher de l'écran.
+  async resume(wantMic) {
+    if (this.ctx && this.ctx.state !== 'running') {
+      const timeout = new Promise((resolve) => setTimeout(resolve, 1500));
+      await Promise.race([this.ctx.resume().catch(() => {}), timeout]);
+    }
+    const track = this.micStream && this.micStream.getAudioTracks()[0];
+    if (track && track.readyState === 'ended') this.stopListening();
+    if (wantMic && !this.listening && this.canListen) return this.startListening();
+    return this.listening;
+  }
+
   stopListening() {
     if (this.micStream) {
       this.micStream.getTracks().forEach((track) => track.stop());

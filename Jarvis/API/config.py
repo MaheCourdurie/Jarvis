@@ -94,6 +94,16 @@ EXTRA_ALLOWED_ORIGINS = env_list("JARVIS_ALLOWED_ORIGINS", [])
 REMOTE_SYSTEM_CONTROL = env_flag("JARVIS_REMOTE_SYSTEM_CONTROL", False)
 # Code exigé pour utiliser Jarvis depuis un autre appareil (téléphone). Vide = accès à distance refusé.
 ACCESS_TOKEN = env_str("JARVIS_ACCESS_TOKEN", "")
+# Tant que Jarvis tourne, le Mac ne se met pas en veille (l'écran, si) : secteur | toujours | 0.
+# « secteur » : seulement branché, la batterie est épargnée. Capot fermé, le Mac dort quand même.
+KEEP_AWAKE = env_str("JARVIS_KEEP_AWAKE", "secteur").lower()
+# Lancé à la demande par le service macOS, Jarvis s'arrête après ce nombre de minutes sans aucune
+# demande (interface fermée partout, aucune alarme en attente). 0 : il reste allumé.
+IDLE_MINUTES = env_int("JARVIS_IDLE_MINUTES", 20, 0, 1440)
+# Bot Telegram qui lance et arrête Jarvis (Telegram/telegram_bot.py, réglé par ./run_jarvis.sh telegram).
+TELEGRAM_BOT_TOKEN = env_str("TELEGRAM_BOT_TOKEN", "")
+# Identifiants des comptes Telegram autorisés à piloter Jarvis ; tous les autres sont ignorés.
+TELEGRAM_ALLOWED_USERS = env_list("TELEGRAM_ALLOWED_USERS", [])
 
 # ── Voix ───────────────────────────────────────────────────────────────────
 # auto | piper | say | browser | off

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import mimetypes
 import random
 import re
 import threading
@@ -50,7 +51,9 @@ from config import (
     CONFIRM_ACTIONS,
     EXTRA_ALLOWED_ORIGINS,
     HOST,
+    IDLE_MINUTES,
     INTERFACE_DIR,
+    KEEP_AWAKE,
     OLLAMA_MODEL,
     PORT,
     REMOTE_SYSTEM_CONTROL,
@@ -61,6 +64,7 @@ from config import (
 )
 from google_client import GoogleApiError, GoogleClient, GoogleConfigError
 from intents import COMMAND_HELP, classify_confirmation, detect_action
+from on_demand import Activity, ActivityTracker, launchd_sockets, watch_idle
 from mail_actions import (
     extract_recent_email_from_history,
     format_last_mail,
@@ -79,6 +83,7 @@ from system_actions import (
     handle_time,
     handle_volume,
     handle_web_search,
+    keep_awake,
     read_system_metrics,
     system_alerts,
 )
@@ -162,6 +167,16 @@ mail_client = GoogleClient.from_env()
 alarms = AlarmStore.from_env(mail_client.timezone_name)
 dashboard = Dashboard(mail_client, alarms)
 _alarm_scheduler_started = False
+# Démarrage à la demande (voir on_demand.py) : le serveur, et ce qui l'occupe.
+activity = Activity()
+_server = None
+_on_demand = False
+
+
+def _go_to_sleep() -> None:
+    print(f"[JARVIS] Aucune demande depuis {IDLE_MINUTES} min : arrêt. macOS me relancera à la prochaine demande.", flush=True)
+    if _server is not None:
+        _server.should_exit = True
 
 
 @asynccontextmanager
@@ -181,9 +196,19 @@ async def lifespan(_app: FastAPI):
     # Les modèles (langage, voix) sont chargés en tâche de fond : l'API répond tout de suite.
     llm.warm_up()
     voice.preload()
+    # Un Mac endormi ne répond plus au téléphone.
+    awake = keep_awake(KEEP_AWAKE)
+    if awake is not None:
+        print(f"[JARVIS] Mise en veille du Mac empêchée ({KEEP_AWAKE}) tant que Jarvis tourne", flush=True)
+    if _on_demand and IDLE_MINUTES:
+        watch_idle(activity, IDLE_MINUTES, lambda: bool(alarms.list_alarms()), _go_to_sleep)
+        print(f"[JARVIS] Lancé à la demande : arrêt après {IDLE_MINUTES} min sans demande", flush=True)
     print(f"[JARVIS] En ligne — interface : http://{'localhost' if HOST in {'127.0.0.1', '0.0.0.0'} else HOST}:{PORT}/", flush=True)
 
     yield
+
+    if awake is not None:
+        awake.terminate()
 
     if env_flag("GOOGLE_FORGET_TOKEN_ON_EXIT", True):
         try:
@@ -247,6 +272,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-Jarvis-Token"],
 )
 app.add_middleware(RemoteAccessGuard)
+app.add_middleware(ActivityTracker, activity=activity)
 # Refuse les requêtes adressées à un autre nom d'hôte (protection contre le DNS rebinding).
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts())
 
@@ -514,7 +540,7 @@ def converse(request: ChatRequest, plan: dict) -> Iterator[dict]:
         yield {"type": "status", "label": "Recherche web"}
         yield notice
         if not query:
-            query = (llm.search_query(history, text, context) if tools_ok else None) or web_search.clean_query(text)
+            query = llm.search_query(history, text) or web_search.clean_query(text)
     else:
         spoke = False
         stream = llm.chat_stream(
@@ -552,7 +578,16 @@ def converse(request: ChatRequest, plan: dict) -> Iterator[dict]:
 
     yield {"type": "sources", "query": query, "sources": web_search.sources(results)}
     answer_context = f"{context}\n\n{web_search.format_for_model(query, results)}\n\n{llm.WEB_ANSWER_RULES}"
-    for sentence in llm.chat_stream(history, text, request.temperature, answer_context):
+    # Prompt réduit et historique court : le modèle a moins à lire et commence à parler plus tôt.
+    answer = llm.chat_stream(
+        history,
+        text,
+        llm.WEB_TEMPERATURE,
+        answer_context,
+        system=llm.WEB_PERSONA,
+        history_limit=llm.WEB_HISTORY_MESSAGES,
+    )
+    for sentence in answer:
         yield {"type": "sentence", "text": sentence}
 
 
@@ -788,12 +823,28 @@ class HudFiles(StaticFiles):
 
 
 # Le HUD est servi par l'API elle-même : une seule adresse à ouvrir (http://localhost:8001/).
+# Il s'installe aussi comme une app (manifeste, icônes, service worker sw.js).
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 if INTERFACE_DIR.is_dir():
     app.mount("/", HudFiles(directory=str(INTERFACE_DIR), html=True), name="hud")
 
 
-if __name__ == "__main__":
-    """ Démarre le serveur API avec Uvicorn. Accessible sur http://localhost:8001"""
+def serve() -> None:
+    """Démarre le serveur sur http://localhost:8001.
+
+    Lancé à la demande par le service macOS, il reprend le port que le système surveillait.
+    """
     import uvicorn
 
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=False)
+    global _server, _on_demand
+    sockets = launchd_sockets()
+    _on_demand = bool(sockets)
+    _server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=PORT))
+    _server.run(sockets=sockets or None)
+
+
+if __name__ == "__main__":
+    # Le module « main » (et non « __main__ ») : c'est son application et son état qui sont servis.
+    import main
+
+    main.serve()

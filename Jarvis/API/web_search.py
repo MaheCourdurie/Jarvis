@@ -16,6 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from typing import Optional
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
@@ -33,10 +34,12 @@ MAX_RESULTS = 6
 PAGES_TO_READ = 3
 SEARCH_TIMEOUT = 8.0
 PAGE_TIMEOUT = 5.0
-READ_DEADLINE = 6.5           # temps total accordé à la lecture des pages
+# Lecture des pages : 0,1 à 1,5 s d'ordinaire, parfois bien plus. Au-delà de ce délai, Jarvis
+# répond sans la page (avec l'extrait du moteur) plutôt que de faire attendre son utilisateur.
+READ_DEADLINE = 2.5
 MAX_PAGE_BYTES = 800_000
 MAX_REDIRECTS = 4
-EXTRACT_CHARS = 1400          # texte conservé par page
+EXTRACT_CHARS = 1400          # texte conservé par page (moins, et des horaires se perdent)
 CACHE_SECONDS = 300
 
 STOPWORDS = {
@@ -256,8 +259,9 @@ def _keywords(query: str) -> list[str]:
     return list(dict.fromkeys(words))
 
 
-def extract_passages(page: str, query: str, budget: int = EXTRACT_CHARS) -> str:
+def extract_passages(page: str, query: str, budget: Optional[int] = None) -> str:
     """Retient, dans une page, les lignes en rapport avec la question (et leur voisinage)."""
+    budget = budget or EXTRACT_CHARS
     parser = _TextExtractor()
     try:
         parser.feed(page)
@@ -297,11 +301,12 @@ def extract_passages(page: str, query: str, budget: int = EXTRACT_CHARS) -> str:
     return "\n".join(lines[index] for index in sorted(keep))
 
 
-def _read(result: WebResult, query: str) -> None:
+def _read(result: WebResult, query: str) -> str:
     try:
-        result.extract = extract_passages(fetch_page(result.url), query)
+        return extract_passages(fetch_page(result.url), query)
     except Exception as exc:
         print(f"[WEB] Lecture impossible ({result.site}): {exc}", flush=True)
+        return ""
 
 
 def gather(query: str) -> list[WebResult]:
@@ -314,8 +319,10 @@ def gather(query: str) -> list[WebResult]:
 
     results = search(query)
     pool = ThreadPoolExecutor(max_workers=PAGES_TO_READ)
-    futures = [pool.submit(_read, result, query) for result in results[:PAGES_TO_READ]]
-    wait(futures, timeout=READ_DEADLINE)
+    futures = {pool.submit(_read, result, query): result for result in results[:PAGES_TO_READ]}
+    done, _late = wait(futures, timeout=READ_DEADLINE)
+    for future in done:
+        futures[future].extract = future.result()
     # Les pages trop lentes sont abandonnées : les extraits du moteur suffiront.
     pool.shutdown(wait=False, cancel_futures=True)
 

@@ -25,6 +25,24 @@ function storeToken(token) {
   history.replaceState(null, '', location.pathname + location.search);
 })();
 
+// Le code se colle tel quel, ou avec le lien d'appairage entier (…/#code=XXXX).
+function codeFrom(text) {
+  const value = (text || '').trim();
+  const match = value.match(/[#&?]code=([^&\s]+)/);
+  return match ? decodeURIComponent(match[1]) : value;
+}
+
+// Où tourne l'interface : sur le Mac lui-même, ou dans l'app installée sur l'écran d'accueil.
+// Sur iPhone, l'app installée a son propre stockage : elle redemande le code une fois.
+const ON_MAC = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+const INSTALLED = navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+// Le service worker garde l'interface en cache : l'app s'ouvre même quand le Mac est injoignable.
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('[app] mise en cache impossible', err));
+}
+
 function authHeaders(headers = {}) {
   const token = readToken();
   return token ? { ...headers, 'X-Jarvis-Token': token } : headers;
@@ -342,6 +360,8 @@ function silence() {
 // Réveil sans prononcer le prénom (clic sur le réacteur ou barre d'espace).
 function wake() {
   if (!state.booted) return;
+  // Un toucher suffit à rétablir le son si l'iPhone l'a suspendu.
+  voice.init().catch(() => {});
   if (voice.speaking) {
     silence();
     return;
@@ -640,6 +660,44 @@ async function openHelp() {
   }
 }
 
+// ── Installation sur l'écran d'accueil ────────────────────────────────────
+
+let installPrompt = null;   // Android : l'installation proposée par le navigateur
+
+function setupInstall() {
+  $('installToggle').hidden = INSTALLED || ON_MAC || !(IOS || installPrompt);
+}
+
+function openInstall() {
+  if (installPrompt) {
+    // Android : le navigateur installe l'app lui-même, et elle garde le code d'accès.
+    installPrompt.prompt();
+    installPrompt = null;
+    setupInstall();
+    return;
+  }
+  $('installCode').hidden = true;
+  $('install').hidden = false;
+}
+
+async function copyCode() {
+  const code = readToken();
+  if (!code) {
+    showToast('Aucun code d\'accès sur cet appareil');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast('Code copié');
+  } catch (err) {
+    // Copie refusée : le code s'affiche, prêt à être copié à la main.
+    const field = $('installCode');
+    field.value = code;
+    field.hidden = false;
+    field.select();
+  }
+}
+
 // ── Démarrage ─────────────────────────────────────────────────────────────
 
 function bootLine(label, value, level) {
@@ -657,14 +715,25 @@ function bootLine(label, value, level) {
 function askAccessCode(message) {
   const form = $('bootCode');
   form.hidden = false;
+  $('bootBtn').hidden = true;     // « Connexion… » attend le code : inutile de l'afficher
   $('bootHint').textContent = message;
+  const paste = $('bootCodePaste');
+  paste.hidden = !(navigator.clipboard && navigator.clipboard.readText);
+  paste.onclick = async () => {
+    try {
+      $('bootCodeInput').value = codeFrom(await navigator.clipboard.readText());
+    } catch (err) {
+      $('bootHint').textContent = 'Collage refusé : touchez longuement le champ, puis « Coller ».';
+    }
+  };
   return new Promise((resolve) => {
     form.onsubmit = (event) => {
       event.preventDefault();
-      const code = $('bootCodeInput').value.trim();
+      const code = codeFrom($('bootCodeInput').value);
       if (!code) return;
       storeToken(code);
       form.hidden = true;
+      $('bootBtn').hidden = false;
       resolve();
     };
   });
@@ -682,10 +751,16 @@ async function waitForCore() {
       return;
     } catch (err) {
       if (err.status === 401) {
-        await askAccessCode(readToken() ? 'Code refusé. Saisissez le code d\'accès affiché sur le Mac.' : 'Saisissez le code d\'accès affiché sur le Mac.');
+        const first = INSTALLED
+          ? 'Première ouverture de l\'app : collez le code d\'accès copié depuis Safari (bouton « App »).'
+          : 'Saisissez le code d\'accès affiché sur le Mac.';
+        await askAccessCode(readToken() ? 'Code refusé. Saisissez le code d\'accès affiché sur le Mac.' : first);
         continue;
       }
-      hint.textContent = err.status === 403 ? err.message : `Noyau injoignable sur ${API_URL} — lancez ./run_jarvis.sh start`;
+      if (err.status === 403) hint.textContent = err.message;
+      else if (ON_MAC) hint.textContent = `Noyau injoignable sur ${API_URL} — lancez ./run_jarvis.sh start`;
+      // Sur le téléphone, l'interface vient du cache : Jarvis se reconnecte dès que le Mac répond.
+      else hint.textContent = 'Jarvis est injoignable. Vérifiez que Tailscale est activé sur cet appareil et que le Mac est allumé.';
       await sleep(2500);
     }
   }
@@ -820,6 +895,25 @@ $('help').addEventListener('click', (event) => {
 });
 $('googleConnectBtn').addEventListener('click', () => toggleGoogle(true));
 $('googleDisconnectBtn').addEventListener('click', () => toggleGoogle(false));
+$('installToggle').addEventListener('click', openInstall);
+$('installClose').addEventListener('click', () => { $('install').hidden = true; });
+$('install').addEventListener('click', (event) => {
+  if (event.target === $('install')) $('install').hidden = true;
+});
+$('copyCodeBtn').addEventListener('click', copyCode);
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  installPrompt = event;
+  setupInstall();
+});
+
+// Retour dans l'app (écran déverrouillé, autre app quittée) : l'iPhone a pu couper le son et le micro.
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !state.booted) return;
+  await voice.resume(state.micWanted);
+  renderToggles();
+  refreshStatus().catch(() => {});
+});
 
 // Après un clic à la souris, le bouton rend le focus : la barre d'espace reste dédiée au réveil.
 document.addEventListener('mouseup', (event) => {
@@ -830,6 +924,7 @@ document.addEventListener('mouseup', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     $('help').hidden = true;
+    $('install').hidden = true;
     silence();
     return;
   }
@@ -842,4 +937,5 @@ document.addEventListener('keydown', (event) => {
 
 updateClock();
 setInterval(updateClock, 1000);
+setupInstall();
 waitForCore();

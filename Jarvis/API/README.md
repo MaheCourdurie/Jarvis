@@ -193,11 +193,12 @@ Les demandes en langage naturel qui envoient un mail ou suppriment en masse port
 |---|---|
 | `load_system_prompt()` | charge `system_prompt.txt` et y inscrit la formule d'appel |
 | `ollama_status()` | vérifie qu'Ollama répond et que le modèle existe |
-| `build_messages(history, message, context)` | prompt système + contexte en direct + historique récent |
-| `chat_stream(history, message, temperature, context, tools=None)` | réponse phrase par phrase, pour parler sans attendre la fin ; se termine par un `ToolCall` si le modèle appelle un outil |
+| `build_messages(history, message, context, system=None, limit=None)` | prompt système (ou `system`) + contexte en direct + historique récent (ou les `limit` derniers messages) |
+| `chat_stream(history, message, temperature, context, tools=None, system=None, history_limit=None)` | réponse phrase par phrase, pour parler sans attendre la fin ; se termine par un `ToolCall` si le modèle appelle un outil, y compris quand il l'écrit en toutes lettres (« recherche_web{…} ») au lieu de le déclarer |
 | `supports_tools()` | indique si le modèle sait appeler des outils (sinon, seul le routeur déclenche les recherches) |
-| `search_query(history, message, context)` | fait formuler par le modèle la requête d'une recherche déjà décidée (ajoute la ville pour un service de proximité) |
-| `WEB_TOOL`, `TOOLS_HINT`, `WEB_ANSWER_RULES` | définition de l'outil `recherche_web` et consignes : quand chercher, comment répondre à partir des résultats |
+| `search_query(history, message)` | fait formuler la requête d'une recherche déjà décidée, avec un prompt de quelques lignes (`QUERY_PROMPT`, 0,4 s) : reprend le sujet d'une question de suite, ajoute la ville pour un service de proximité |
+| `WEB_TOOL`, `TOOLS_HINT`, `WEB_ANSWER_RULES` | définition de l'outil `recherche_web` et consignes : quand chercher, comment répondre à partir des résultats (réponse directe d'abord, événement le plus récent ou le plus proche) |
+| `WEB_PERSONA`, `WEB_HISTORY_MESSAGES`, `WEB_TEMPERATURE` | la réponse web part avec une persona réduite, les 2 derniers messages et une température basse : moins de texte à lire (le modèle lit environ 1 200 jetons par seconde avant de parler) et des faits mieux tenus |
 | `split_sentences(buffer)` | découpe le flux en phrases complètes (sans couper « J.A.R.V.I.S. » ou « M. ») |
 | `first_clause(buffer)` | pour parler plus tôt, dit une longue première phrase en deux temps, à partir d'une virgule |
 | `keep_warm()` | charge le modèle en mémoire, ou l'y maintient, sans rien générer |
@@ -218,12 +219,22 @@ Si le modèle affirme « j'ai envoyé… » alors qu'aucun module n'a rien exéc
 | `fetch_page(url)` | télécharge une page publique : taille bornée, redirections suivies à la main et revalidées |
 | `is_public_url(url)` | refuse le réseau local, les adresses internes et tout ce qui n'est pas http(s) |
 | `extract_passages(page, query)` | garde le texte visible, puis les lignes en rapport avec la question et leur voisinage (une ligne de tableau reste sur une ligne : « Lundi 09:00 à 21:00 ») |
-| `gather(query)` | recherche + lecture en parallèle des trois premières pages, avec délai global et cache de 5 min |
+| `gather(query)` | recherche + lecture en parallèle des trois premières pages ; une page qui n'a pas répondu en 2,5 s est abandonnée (son extrait du moteur reste) ; cache de 5 min |
 | `format_for_model(query, results)` | met les résultats en forme pour le modèle |
 | `sources(results)` | pages affichées en liens dans le HUD |
 | `clean_query(text)` | « cherche … sur internet » → requête |
 
 Le texte des pages est un contenu non fiable : il est passé au modèle comme une donnée, avec la consigne de n'obéir à aucune instruction qu'il contiendrait, et le modèle ne peut de toute façon déclencher aucune action.
+
+### `on_demand.py`
+- **Role**: Jarvis à la demande.
+- **Responsabilite**: le service macOS surveille le port et ne lance Jarvis qu'à la première connexion ; Jarvis s'arrête ensuite après `JARVIS_IDLE_MINUTES` sans demande (jamais si une alarme attend).
+
+| Élément | Rôle |
+|---|---|
+| `launchd_sockets()` | récupère le port ouvert par macOS (`launch_activate_socket`) ; vide si Jarvis est lancé à la main |
+| `Activity`, `ActivityTracker` | dernière demande et demandes en cours ; une réponse en flux compte jusqu'à sa fin |
+| `should_sleep(...)`, `watch_idle(...)` | décident de l'arrêt et le déclenchent (`main.serve()` arrête alors uvicorn proprement) |
 
 ### `phone_setup.py`
 - **Role**: préparer l'accès depuis le téléphone (appelé par `./run_jarvis.sh phone`).
@@ -232,6 +243,8 @@ Le texte des pages est un contenu non fiable : il est passé au modèle comme un
 |---|---|
 | `ensure_phone_settings(dns_name, env_file)` | crée le code d'accès s'il manque et autorise l'adresse Tailscale dans `.env` ; renvoie le code |
 | `show_qr(link)` | affiche le lien d'appairage en QR code (terminal et écran) |
+| `set_env_values(values)` | écrit ou remplace des réglages dans `.env` sans toucher au reste (utilisé aussi par le bot Telegram) |
+| `phone_report(status)` | à partir de `tailscale status --json`, dit si un téléphone est connecté au réseau Tailscale (sinon Safari ne trouve pas le Mac) |
 
 ### `voice.py`
 - **Role**: la voix de Jarvis, en local.
@@ -281,6 +294,7 @@ En mode `auto` : Piper, sinon `say` (macOS), sinon le HUD utilise la voix du nav
 | `handle_open_url`, `handle_web_search` | ouvre un site ou une recherche (web, Google, YouTube, Wikipédia) |
 | `handle_volume(params)` | volume : `get`, `set`, `up`, `down`, `mute`, `unmute` |
 | `handle_sleep_display()` | met l'écran en veille |
+| `keep_awake(mode)` | au démarrage de l'API : empêche le Mac de s'endormir tant que Jarvis tourne (`caffeinate`), pour qu'il réponde au téléphone (`JARVIS_KEEP_AWAKE`) |
 
 Toutes les commandes système passent par `_run()` avec une liste d'arguments, jamais par un shell.
 

@@ -22,6 +22,9 @@ DEFAULT_PIPER_VOICE="fr_FR-tom-medium"
 SERVICE_LABEL="fr.jarvis.assistant"
 SERVICE_PLIST="$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
 SERVICE_LOG="$HOME/Library/Logs/Jarvis.log"
+TELEGRAM_LABEL="fr.jarvis.telegram"
+TELEGRAM_PLIST="$HOME/Library/LaunchAgents/$TELEGRAM_LABEL.plist"
+TELEGRAM_LOG="$HOME/Library/Logs/Jarvis-Telegram.log"
 
 print_usage() {
   # Affiche l'aide d'utilisation du script et la liste des commandes disponibles.
@@ -37,7 +40,9 @@ Commands:
            (GGUF fine-tuné s'il existe, sinon modèle de base JARVIS_BASE_MODEL)
   voice    Télécharger les modèles de voix (Piper + Whisper)
   phone    Rendre Jarvis accessible depuis le téléphone (Tailscale, HTTPS, code d'accès)
-  service  Faire tourner Jarvis en permanence : service install | restart | remove | status (macOS)
+  service  Faire tourner Jarvis en permanence (macOS) :
+           service install | start | stop | restart | remove | status
+  telegram Bot Telegram qui lance et arrête Jarvis à distance : telegram [setup] | status | remove
   test     Lancer un prompt de test rapide sur Ollama
   pytest   Lancer les tests automatiques
   train    Lancer le script de fine-tuning (Jarvis/train.py)
@@ -138,7 +143,10 @@ run_api() {
   fi
 
   # L'hôte et le port se règlent dans .env (JARVIS_HOST, JARVIS_PORT).
-  (cd "$API_DIR" && python main.py)
+  # exec : lancé par le service, Python doit être le processus même du service pour recevoir
+  # le port que macOS surveille (démarrage à la demande).
+  cd "$API_DIR"
+  exec python main.py
 }
 
 run_start() {
@@ -341,11 +349,13 @@ run_phone() {
   token="$(cd "$API_DIR" && python phone_setup.py settings "$dns")"
 
   echo "[phone] Publication privée de Jarvis sur https://$dns (réseau Tailscale uniquement)"
-  echo "[phone] Si Tailscale demande d'activer HTTPS, ouvre le lien qu'il affiche puis relance la commande."
+  echo "[phone] La première fois, Tailscale demande d'autoriser la publication : ouvre le lien qu'il affiche et accepte, la commande reprend d'elle-même."
   "$ts" serve --bg --https=443 "http://127.0.0.1:$port"
 
   link="https://$dns/#code=$token"
   python -c "import segno" >/dev/null 2>&1 || pip install --quiet segno || true
+  echo
+  "$ts" status --json 2>/dev/null | (cd "$API_DIR" && python phone_setup.py check) || true
   echo
   echo "Sur le téléphone : active Tailscale, puis scanne ce QR code (ou ouvre le lien) :"
   (cd "$API_DIR" && python phone_setup.py qr "$link")
@@ -366,22 +376,15 @@ run_service() {
 
   case "$action" in
     install)
-      # macOS interdit aux services d'arrière-plan de lire le Bureau, les Documents et les
-      # Téléchargements : le service échouerait en boucle (« Operation not permitted »).
-      case "$ROOT_DIR/" in
-        "$HOME/Desktop/"*|"$HOME/Documents/"*|"$HOME/Downloads/"*|"$HOME/Library/Mobile Documents/"*)
-          echo "Le projet est dans un dossier protégé par macOS ($ROOT_DIR)."
-          echo "Un service d'arrière-plan ne peut pas y accéder. Deux solutions :"
-          echo "  - déplacer le projet ailleurs (par exemple ~/Developer/Jarvis), puis relancer cette commande ;"
-          echo "  - ou lancer Jarvis à la main quand tu en as besoin : ./run_jarvis.sh start"
-          exit 1
-          ;;
-      esac
+      check_service_location
+      # Une version précédente du service est retirée d'abord : elle occupe le port.
+      launchctl bootout "$domain/$SERVICE_LABEL" >/dev/null 2>&1 || true
       if lsof -nP -iTCP:"$(env_value JARVIS_PORT 8001)" -sTCP:LISTEN >/dev/null 2>&1; then
         echo "Jarvis tourne déjà sur ce port : arrête-le d'abord (Ctrl+C dans son terminal)."
         exit 1
       fi
       mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+      # À la demande : macOS surveille le port (Sockets) et ne lance Jarvis qu'à la première connexion.
       cat > "$SERVICE_PLIST" <<PLIST_END
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -397,10 +400,18 @@ run_service() {
   </array>
   <key>WorkingDirectory</key>
   <string>$ROOT_DIR</string>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
+  <key>Sockets</key>
+  <dict>
+    <key>Listeners</key>
+    <dict>
+      <key>SockNodeName</key>
+      <string>$(env_value JARVIS_HOST 127.0.0.1)</string>
+      <key>SockServiceName</key>
+      <string>$(env_value JARVIS_PORT 8001)</string>
+      <key>SockFamily</key>
+      <string>IPv4</string>
+    </dict>
+  </dict>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -414,29 +425,152 @@ run_service() {
 </plist>
 PLIST_END
       launchctl bootout "$domain/$SERVICE_LABEL" >/dev/null 2>&1 || true
+      launchctl enable "$domain/$SERVICE_LABEL"
       launchctl bootstrap "$domain" "$SERVICE_PLIST"
-      echo "Jarvis tourne désormais en permanence, et redémarre avec ta session."
+      echo "Jarvis est installé à la demande : il démarre tout seul à la première demande (interface, app, Telegram),"
+      echo "et s'arrête après $(env_value JARVIS_IDLE_MINUTES 20) min sans demande. Rien ne tourne en attendant."
       echo "Interface : http://localhost:$(env_value JARVIS_PORT 8001)/ · Journal : $SERVICE_LOG"
+      ;;
+    start)
+      # Lance Jarvis tout de suite (après un « service stop », ou pour qu'il soit prêt d'avance).
+      if [[ ! -f "$SERVICE_PLIST" ]]; then
+        echo "Service Jarvis non installé : ./run_jarvis.sh service install"
+        exit 1
+      fi
+      launchctl enable "$domain/$SERVICE_LABEL"
+      if ! launchctl print "$domain/$SERVICE_LABEL" >/dev/null 2>&1; then
+        launchctl bootstrap "$domain" "$SERVICE_PLIST"
+      fi
+      launchctl kickstart "$domain/$SERVICE_LABEL"
+      echo "Jarvis lancé."
+      ;;
+    stop)
+      # Arrête Jarvis jusqu'au prochain « service start », même si le Mac redémarre entre-temps.
+      if [[ ! -f "$SERVICE_PLIST" ]]; then
+        echo "Service Jarvis non installé : rien à arrêter."
+        exit 1
+      fi
+      launchctl disable "$domain/$SERVICE_LABEL"
+      launchctl bootout "$domain/$SERVICE_LABEL" >/dev/null 2>&1 || true
+      echo "Jarvis arrêté (./run_jarvis.sh service start pour le relancer)."
       ;;
     restart)
       # Après une mise à jour du code ou du .env.
-      launchctl kickstart -k "$domain/$SERVICE_LABEL"
-      echo "Jarvis relancé."
+      if launchctl print "$domain/$SERVICE_LABEL" >/dev/null 2>&1; then
+        launchctl kickstart -k "$domain/$SERVICE_LABEL"
+        echo "Jarvis relancé."
+      else
+        run_service start
+      fi
       ;;
     remove|uninstall)
       launchctl bootout "$domain/$SERVICE_LABEL" >/dev/null 2>&1 || true
+      launchctl enable "$domain/$SERVICE_LABEL" >/dev/null 2>&1 || true
       rm -f "$SERVICE_PLIST"
       echo "Service Jarvis retiré."
       ;;
     status)
-      if launchctl print "$domain/$SERVICE_LABEL" >/dev/null 2>&1; then
-        echo "Service Jarvis actif. Journal : $SERVICE_LOG"
-      else
+      if [[ ! -f "$SERVICE_PLIST" ]]; then
         echo "Service Jarvis non installé (./run_jarvis.sh service install)."
+      elif launchctl print-disabled "$domain" 2>/dev/null | grep -q "\"$SERVICE_LABEL\" => disabled"; then
+        echo "Jarvis est arrêté (./run_jarvis.sh service start pour le relancer)."
+      elif launchctl print "$domain/$SERVICE_LABEL" 2>/dev/null | grep -q "state = running"; then
+        echo "Jarvis est en marche. Journal : $SERVICE_LOG"
+      elif launchctl print "$domain/$SERVICE_LABEL" >/dev/null 2>&1; then
+        echo "Jarvis est en veille : il démarrera tout seul à la prochaine demande. Journal : $SERVICE_LOG"
+      else
+        echo "Service Jarvis installé, mais pas chargé : ./run_jarvis.sh service start"
       fi
       ;;
     *)
-      echo "Usage: ./run_jarvis.sh service install|restart|remove|status"
+      echo "Usage: ./run_jarvis.sh service install|start|stop|restart|remove|status"
+      exit 1
+      ;;
+  esac
+}
+
+check_service_location() {
+  # macOS interdit aux services d'arrière-plan de lire le Bureau, les Documents et les
+  # Téléchargements : le service échouerait en boucle (« Operation not permitted »).
+  case "$ROOT_DIR/" in
+    "$HOME/Desktop/"*|"$HOME/Documents/"*|"$HOME/Downloads/"*|"$HOME/Library/Mobile Documents/"*)
+      echo "Le projet est dans un dossier protégé par macOS ($ROOT_DIR)."
+      echo "Un service d'arrière-plan ne peut pas y accéder. Deux solutions :"
+      echo "  - déplacer le projet ailleurs (par exemple ~/Developer/Jarvis), puis relancer cette commande ;"
+      echo "  - ou lancer Jarvis à la main quand tu en as besoin : ./run_jarvis.sh start"
+      exit 1
+      ;;
+  esac
+}
+
+run_telegram() {
+  # Bot Telegram qui lance et arrête Jarvis à distance. Il tourne à part (service
+  # « fr.jarvis.telegram ») pour rester joignable quand Jarvis est arrêté.
+  local action="${1:-setup}" domain
+  domain="gui/$(id -u)"
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "Le bot Telegram pilote le service macOS de Jarvis : macOS uniquement."
+    exit 1
+  fi
+
+  case "$action" in
+    setup|install)
+      check_service_location
+      activate_venv
+      # Un seul programme à la fois peut lire les messages du bot : l'ancien s'efface pendant l'appairage.
+      launchctl bootout "$domain/$TELEGRAM_LABEL" >/dev/null 2>&1 || true
+      python "$ROOT_DIR/Telegram/telegram_bot.py" setup
+      mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+      cat > "$TELEGRAM_PLIST" <<PLIST_END
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$TELEGRAM_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$VENV_DIR/bin/python</string>
+    <string>$ROOT_DIR/Telegram/telegram_bot.py</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$ROOT_DIR</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$TELEGRAM_LOG</string>
+  <key>StandardErrorPath</key>
+  <string>$TELEGRAM_LOG</string>
+</dict>
+</plist>
+PLIST_END
+      launchctl bootstrap "$domain" "$TELEGRAM_PLIST"
+      echo "Bot Telegram en service : il répond même quand Jarvis est arrêté. Journal : $TELEGRAM_LOG"
+      ;;
+    status)
+      if launchctl print "$domain/$TELEGRAM_LABEL" 2>/dev/null | grep -q "state = running"; then
+        echo "Bot Telegram actif. Journal : $TELEGRAM_LOG"
+      else
+        echo "Bot Telegram arrêté ou non installé (./run_jarvis.sh telegram)."
+      fi
+      ;;
+    remove|uninstall)
+      launchctl bootout "$domain/$TELEGRAM_LABEL" >/dev/null 2>&1 || true
+      rm -f "$TELEGRAM_PLIST"
+      echo "Bot Telegram retiré (son token reste dans .env : TELEGRAM_BOT_TOKEN)."
+      ;;
+    *)
+      echo "Usage: ./run_jarvis.sh telegram [setup] | status | remove"
       exit 1
       ;;
   esac
@@ -474,6 +608,9 @@ main() {
       ;;
     service)
       run_service "${2:-status}"
+      ;;
+    telegram)
+      run_telegram "${2:-setup}"
       ;;
     pytest)
       run_pytest

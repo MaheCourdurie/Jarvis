@@ -30,6 +30,7 @@ Le modèle, la voix et la reconnaissance tournent sur ta machine. Seuls en sorte
 - [Démarrage rapide](#démarrage-rapide)
 - [Parler à Jarvis](#parler-à-jarvis)
 - [Utiliser Jarvis depuis ton téléphone](#utiliser-jarvis-depuis-ton-téléphone)
+- [Lancer et arrêter Jarvis depuis Telegram](#lancer-et-arrêter-jarvis-depuis-telegram)
 - [Ce que Jarvis sait faire](#ce-que-jarvis-sait-faire)
 - [Commandes de run_jarvis.sh](#commandes-de-run_jarvissh)
 - [Configuration (.env)](#configuration-env)
@@ -94,7 +95,7 @@ Pendant que Jarvis parle ou réfléchit, le micro est ignoré : il ne s'entend p
 
 S'il écorche un nom propre (une ville, une enseigne, un prénom), ajoute-le à `JARVIS_STT_VOCABULARY` dans `.env` : la reconnaissance vocale saura alors l'écrire.
 
-Réactivité mesurée sur un MacBook Air M5, de la fin de ta phrase au début de la réponse : environ 1 seconde pour une action (heure, alarme, volume…), 2 secondes pour une question libre, 5 à 8 secondes pour une recherche web (Jarvis prévient aussitôt). Sur Mac Apple Silicon, la reconnaissance vocale tourne sur la puce graphique ; tant que le HUD est ouvert, le modèle de langage reste chargé en mémoire.
+Réactivité mesurée sur un MacBook Air M5, de la fin de ta phrase au début de la réponse : environ 1 seconde pour une action (heure, alarme, volume…), 2 secondes pour une question libre, 4 à 6 secondes pour une recherche web (Jarvis prévient aussitôt ; c'est surtout le temps que met le modèle à lire les pages). Sur Mac Apple Silicon, la reconnaissance vocale tourne sur la puce graphique ; tant que le HUD est ouvert, le modèle de langage reste chargé en mémoire.
 
 ## Utiliser Jarvis depuis ton téléphone
 
@@ -111,18 +112,57 @@ Jarvis tourne sur le Mac ; le téléphone n'est qu'un écran et un micro de plus
 3. Un QR code s'affiche à l'écran : scanne-le avec l'appareil photo du téléphone. Le lien contient un code d'accès, mémorisé une fois pour toutes par le navigateur du téléphone.
 4. Relance Jarvis (`./run_jarvis.sh start`) : le code d'accès et l'adresse Tailscale sont pris en compte.
 
+Si Safari affiche « Safari ne peut pas ouvrir la page », Tailscale n'est pas activé sur le téléphone : sans lui, l'adresse du Mac est introuvable. Ouvre l'app Tailscale, vérifie le compte (le même que sur le Mac), active-la (l'icône VPN apparaît en haut de l'écran), puis rescanne le QR code. `./run_jarvis.sh phone` le signale avant d'afficher le QR code.
+
 Depuis un autre appareil que le Mac, l'API exige ce code d'accès (`JARVIS_ACCESS_TOKEN`, créé dans `.env`) : un appareil du réseau Tailscale qui ne l'a pas ne peut rien faire. Pour couper l'accès : `tailscale serve --https=443 off`.
 
-Pour que Jarvis réponde au téléphone à tout moment, fais-le tourner en permanence sur le Mac :
+Pour que Jarvis réponde au téléphone à tout moment, installe-le comme service macOS. Il est **à la demande** : rien ne tourne tant que personne ne s'en sert ; macOS surveille son port et le lance à la première connexion (interface, app, Telegram), en moins d'une seconde. Jarvis s'arrête ensuite de lui-même après 20 minutes sans demande (`JARVIS_IDLE_MINUTES`) ; une interface ouverte quelque part, ou une alarme en attente, le garde allumé.
 
 ```bash
-./run_jarvis.sh service install   # démarre maintenant et à chaque ouverture de session
+./run_jarvis.sh service install   # à la demande, dès maintenant et à chaque ouverture de session
+./run_jarvis.sh service stop      # le coupe complètement : plus de démarrage à la demande, jusqu'au prochain start
+./run_jarvis.sh service start     # le relance (et le démarre tout de suite)
 ./run_jarvis.sh service restart   # après une mise à jour du code ou du .env
 ./run_jarvis.sh service status
-./run_jarvis.sh service remove
+./run_jarvis.sh service remove    # le désinstalle
 ```
 
 Le service exige que le projet soit hors du Bureau, des Documents et des Téléchargements : macOS interdit aux programmes d'arrière-plan d'accéder à ces dossiers. Range-le par exemple dans `~/Developer/Jarvis` (et recrée `.venv` après le déplacement). Sinon, lance simplement Jarvis à la main avec `./run_jarvis.sh start` quand tu en as besoin.
+
+### L'app sur l'écran d'accueil
+
+Jarvis s'installe comme une app : icône sur l'écran d'accueil, ouverture en plein écran, sans la barre de Safari.
+
+1. Dans Safari, une fois Jarvis ouvert sur le téléphone, touche **App** en haut de l'écran, puis **Copier le code**.
+2. Touche **Partager**, puis **Sur l'écran d'accueil**.
+3. Ouvre Jarvis depuis l'écran d'accueil : touche **Coller**, puis **Valider**. Sur iPhone, l'app installée ne partage pas les données de Safari ; elle demande donc le code une seule fois. Le lien complet du QR code se colle aussi.
+
+L'interface reste dans l'app (service worker) : si le Mac ne répond pas, elle s'ouvre quand même, dit ce qui manque et se reconnecte d'elle-même. Quand tu reviens dans l'app après avoir verrouillé l'écran, le micro repart tout seul ; si Jarvis reste muet, touche le réacteur.
+
+### Joindre Jarvis à tout moment
+
+- **Sur l'iPhone** : dans l'app Tailscale, touche ta photo de profil, puis **VPN On Demand**, et choisis **Always** pour le Wi-Fi et le réseau mobile : Tailscale se reconnecte tout seul.
+- **Sur le Mac** : Jarvis tourne en service (voir plus haut) et, tant qu'il tourne, empêche le Mac de s'endormir quand il est branché ; l'écran s'éteint normalement. Réglage : `JARVIS_KEEP_AWAKE=secteur` (par défaut), `toujours` (sur batterie aussi) ou `0`. Capot fermé, un MacBook s'endort quoi qu'il arrive : laisse-le ouvert.
+
+## Lancer et arrêter Jarvis depuis Telegram
+
+Un petit bot Telegram lance, arrête et redémarre Jarvis à distance, et dit s'il est en ligne. Il tourne à part de Jarvis (service macOS `fr.jarvis.telegram`) : il reste joignable quand Jarvis est arrêté. Il interroge lui-même Telegram, sans rien ouvrir sur le Mac, et n'obéit qu'à ton compte.
+
+1. Dans Telegram, ouvre **@BotFather**, envoie `/newbot`, choisis un nom (« Jarvis ») puis un identifiant qui finit par « bot ». Copie le token qu'il te donne : copié sur l'iPhone, il arrive aussi dans le presse-papiers du Mac.
+2. Sur le Mac :
+
+   ```bash
+   ./run_jarvis.sh telegram
+   ```
+
+   Le token est lu dans le presse-papiers (ou dans `.env`, ou demandé), puis un code à 6 chiffres s'affiche : envoie-le au bot dans Telegram (ou scanne le QR code affiché et touche **Démarrer**). Ce code à usage unique appaire ton compte ; les messages de tous les autres sont ignorés.
+3. Envoie `/aide` au bot pour la liste des commandes (`/statut`, `/lancer`, `/arreter`, `/redemarrer`), aussi proposées par le menu « / » de Telegram. Ses réponses portent des boutons **Lancer**, **Arrêter**, **Redémarrer** et **Statut**, et il comprend aussi « lance », « arrête », « stop »…
+
+Pour changer de token (par exemple après l'avoir régénéré avec `/revoke` dans @BotFather) : copie le nouveau, puis relance `./run_jarvis.sh telegram` ; le token du presse-papiers remplace l'ancien et l'appairage est conservé.
+
+Jarvis étant à la demande, le bot dit s'il est en ligne, en veille (il démarrera seul à la prochaine demande) ou arrêté ; il ne l'interroge que s'il tourne déjà, pour ne pas le réveiller. « Arrêter » coupe aussi le démarrage à la demande, jusqu'à « Lancer », même si le Mac redémarre. Comme Jarvis, le bot empêche le Mac branché de s'endormir (`JARVIS_KEEP_AWAKE`) : sinon, Jarvis arrêté, plus rien ne le tiendrait éveillé. Mac en veille ou éteint, le bot ne répond pas ; une commande arrivée en retard (plus de 5 minutes) n'est pas exécutée.
+
+Ensuite : `./run_jarvis.sh telegram status` ; `./run_jarvis.sh telegram remove` pour retirer le bot. Journal : `~/Library/Logs/Jarvis-Telegram.log`.
 
 ## Ce que Jarvis sait faire
 
@@ -229,7 +269,8 @@ chmod +x run_jarvis.sh
 - `create`: crée/met à jour le modèle Ollama `jarvis` (GGUF fine-tuné s'il existe, sinon modèle de base)
 - `voice`: télécharge seulement les modèles de voix
 - `phone`: rend Jarvis accessible depuis le téléphone (Tailscale, HTTPS, code d'accès, QR code)
-- `service install|restart|remove|status`: fait tourner Jarvis en permanence (agent de session macOS ; projet hors du Bureau, des Documents et des Téléchargements)
+- `service install|start|stop|restart|remove|status`: installe Jarvis comme service macOS à la demande (lancé à la première connexion, arrêté après `JARVIS_IDLE_MINUTES` sans demande ; projet hors du Bureau, des Documents et des Téléchargements)
+- `telegram [setup]|status|remove`: bot Telegram qui lance et arrête Jarvis à distance (token de BotFather, appairage par QR code)
 - `test`: envoie un prompt de test à Ollama
 - `pytest`: lance les tests automatiques
 - `train`: lance `Jarvis/train.py`
@@ -276,6 +317,10 @@ Tout est optionnel. Copie `.env.example` en `.env` à la racine et adapte.
 | `JARVIS_ALLOWED_ORIGINS` | *(vide)* | origines web supplémentaires autorisées |
 | `JARVIS_REMOTE_SYSTEM_CONTROL` | `0` | `1` : Discord peut piloter le poste |
 | `JARVIS_ACCESS_TOKEN` | *(vide)* | code exigé des autres appareils (téléphone) ; vide = accès à distance refusé ; créé par `./run_jarvis.sh phone` |
+| `JARVIS_IDLE_MINUTES` | `20` | lancé à la demande par le service, Jarvis s'arrête après ce nombre de minutes sans demande ; `0` = jamais |
+| `JARVIS_KEEP_AWAKE` | `secteur` | tant que Jarvis tourne, le Mac ne s'endort pas : `secteur` (branché seulement), `toujours`, ou `0` |
+| `TELEGRAM_BOT_TOKEN` | *(vide)* | token du bot Telegram (donné par BotFather) ; écrit par `./run_jarvis.sh telegram` |
+| `TELEGRAM_ALLOWED_USERS` | *(vide)* | identifiants des comptes Telegram autorisés ; écrit lors de l'appairage |
 | `GOOGLE_FORGET_TOKEN_ON_EXIT` | `1` | `0` : conserve la connexion Google entre deux lancements |
 
 Après avoir changé `JARVIS_USER_TITLE`, relance `./run_jarvis.sh create`.
@@ -469,7 +514,7 @@ Le détail de chaque fichier est dans [Jarvis/API/README.md](Jarvis/API/README.m
 ./run_jarvis.sh pytest
 ```
 
-Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (commandes système simulées), la voix, la recherche web (faux moteur) et l'API de bout en bout avec un faux compte Google. Ils ne touchent ni à ta messagerie, ni à ton agenda, ni à ton ordinateur, ni au réseau.
+Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (commandes système simulées), la voix, la recherche web (faux moteur), l'app installable, le bot Telegram (faux Telegram) et l'API de bout en bout avec un faux compte Google. Ils ne touchent ni à ta messagerie, ni à ton agenda, ni à ton ordinateur, ni au réseau.
 
 ## Arborescence du projet
 
@@ -485,6 +530,8 @@ Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (co
 ├── .env                        # à créer (non versionné)
 ├── Discord/
 │   └── main.py
+├── Telegram/
+│   └── telegram_bot.py         # bot qui lance et arrête Jarvis à distance
 ├── Marketing/
 │   └── report.md
 ├── Page/
@@ -530,5 +577,8 @@ Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (co
         ├── hud.js                  # dialogue, panneaux, démarrage
         ├── core.js                 # réacteur animé
         ├── voice.js                # micro, détection de parole, lecture de la voix
-        └── mic-worklet.js
+        ├── mic-worklet.js
+        ├── manifest.webmanifest    # l'app installable (nom, icônes, plein écran)
+        ├── sw.js                   # service worker : l'interface s'ouvre même Mac injoignable
+        └── icons/                  # icône de l'app (icon.svg et ses rendus PNG)
 ```

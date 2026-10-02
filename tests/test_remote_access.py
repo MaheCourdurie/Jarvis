@@ -74,3 +74,32 @@ def test_phone_settings_create_the_env_file(tmp_path):
     env = tmp_path / ".env"
     token = phone_setup.ensure_phone_settings("mon-mac.tail1234.ts.net", env)
     assert env.read_text(encoding="utf-8").endswith(f"JARVIS_ACCESS_TOKEN={token}\nJARVIS_ALLOWED_ORIGINS=https://mon-mac.tail1234.ts.net\n")
+
+
+# Extrait de `tailscale status --json` : le Mac, son compte et les autres appareils du réseau.
+def tailnet(*peers):
+    return {
+        "Self": {"UserID": 7, "DNSName": "mon-mac.tail1234.ts.net."},
+        "User": {"7": {"LoginName": "moi@exemple.com"}},
+        "Peer": {f"noeud{index}": peer for index, peer in enumerate(peers)},
+    }
+
+
+IPHONE = {"OS": "iOS", "DNSName": "iphone-14-pro-max.tail1234.ts.net.", "Online": False, "LastSeen": "2026-09-05T06:02:36.1Z"}
+PC = {"OS": "windows", "DNSName": "pc.tail1234.ts.net.", "Online": True}
+
+
+def test_phone_check_spots_a_phone_without_tailscale():
+    # Le cas du « Safari ne peut pas ouvrir la page » : l'iPhone est dans le réseau, mais Tailscale y est coupé.
+    report = phone_setup.phone_report(tailnet(IPHONE, PC))
+    assert report.startswith("Attention : ton téléphone n'est pas connecté à Tailscale (hors ligne depuis le 05/09/2026)")
+    assert "ne peut pas ouvrir la page" in report and "avec le compte moi@exemple.com" in report
+
+
+def test_phone_check_once_the_phone_is_connected():
+    report = phone_setup.phone_report(tailnet({**IPHONE, "Online": True}, PC))
+    assert report == "Téléphone connecté à Tailscale : iphone-14-pro-max."
+
+
+def test_phone_check_without_any_phone():
+    assert phone_setup.phone_report(tailnet(PC)).startswith("Aucun téléphone dans ton réseau Tailscale : installe l'app")

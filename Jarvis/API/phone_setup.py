@@ -8,10 +8,12 @@ d'appairage sous forme de QR code.
 Usage :
     python phone_setup.py settings <nom.tailnet.ts.net>   → écrit .env, affiche le code
     python phone_setup.py qr <lien>                       → affiche le QR code du lien
+    tailscale status --json | python phone_setup.py check → dit si le téléphone est connecté
 """
 
 from __future__ import annotations
 
+import json
 import secrets
 import subprocess
 import sys
@@ -64,8 +66,45 @@ def ensure_phone_settings(dns_name: str, env_file: Path = ENV_FILE) -> str:
         lines += ["", "# Accès depuis le téléphone (./run_jarvis.sh phone) — le code est secret"]
     lines = _set(lines, "JARVIS_ACCESS_TOKEN", token)
     lines = _set(lines, "JARVIS_ALLOWED_ORIGINS", ",".join(origins))
-    env_file.write_text("\n".join(lines).strip("\n") + "\n", encoding="utf-8")
+    _write(lines, env_file)
     return token
+
+
+def set_env_values(values: dict[str, str], env_file: Path = ENV_FILE) -> None:
+    """Écrit (ou remplace) des réglages dans .env, sans toucher au reste du fichier."""
+    lines = _read_env(env_file)
+    for key, value in values.items():
+        lines = _set(lines, key, value)
+    _write(lines, env_file)
+
+
+def _write(lines: list[str], env_file: Path) -> None:
+    env_file.write_text("\n".join(lines).strip("\n") + "\n", encoding="utf-8")
+
+
+PHONE_SYSTEMS = {"iOS", "android"}
+
+
+def phone_report(status: dict) -> str:
+    """Dit si un téléphone est en ligne sur le réseau Tailscale : sans cela, il ne trouve pas le Mac."""
+    me = status.get("Self") or {}
+    account = ((status.get("User") or {}).get(str(me.get("UserID"))) or {}).get("LoginName", "")
+    with_account = f" avec le compte {account}" if account else ""
+    phones = [peer for peer in (status.get("Peer") or {}).values() if peer.get("OS") in PHONE_SYSTEMS]
+
+    online = [peer.get("DNSName", "").split(".")[0] for peer in phones if peer.get("Online")]
+    if online:
+        return f"Téléphone connecté à Tailscale : {', '.join(online)}."
+    if not phones:
+        return (f"Aucun téléphone dans ton réseau Tailscale : installe l'app Tailscale sur le téléphone, "
+                f"connecte-toi{with_account}, puis active-la.")
+
+    last_seen = max(peer.get("LastSeen", "") for peer in phones)[:10]
+    since = "" if not last_seen or last_seen.startswith("0001") else f" (hors ligne depuis le {'/'.join(reversed(last_seen.split('-')))})"
+    return (f"Attention : ton téléphone n'est pas connecté à Tailscale{since}, "
+            f"Safari y affichera « Safari ne peut pas ouvrir la page ». "
+            f"Ouvre l'app Tailscale sur le téléphone, connecte-toi{with_account} et active-la "
+            f"(l'icône VPN apparaît en haut de l'écran), puis scanne le QR code.")
 
 
 def show_qr(link: str) -> None:
@@ -86,10 +125,13 @@ def show_qr(link: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in {"settings", "qr"}:
+    command, args = sys.argv[1] if len(sys.argv) > 1 else "", sys.argv[2:]
+    if command == "settings" and len(args) == 1:
+        print(ensure_phone_settings(args[0]))
+    elif command == "qr" and len(args) == 1:
+        show_qr(args[0])
+    elif command == "check" and not args:
+        print(phone_report(json.load(sys.stdin)))
+    else:
         print(__doc__)
         raise SystemExit(2)
-    if sys.argv[1] == "settings":
-        print(ensure_phone_settings(sys.argv[2]))
-    else:
-        show_qr(sys.argv[2])

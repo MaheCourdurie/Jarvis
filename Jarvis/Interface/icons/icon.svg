@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Icône de l'app : le réacteur du HUD. Tout tient dans le cercle central (icône « maskable »). -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="46%" r="72%">
+      <stop offset="0" stop-color="#0b2c44"/>
+      <stop offset="0.55" stop-color="#051320"/>
+      <stop offset="1" stop-color="#01050a"/>
+    </radialGradient>
+    <radialGradient id="core" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.3" stop-color="#e4f9ff"/>
+      <stop offset="0.62" stop-color="#4fd8ff" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#4fd8ff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g transform="translate(256 256)" fill="none" stroke="#4fd8ff" filter="url(#glow)">
+    <circle r="192" stroke-width="3" stroke-opacity="0.35"/>
+    <circle r="168" stroke-width="12" stroke-dasharray="61 27" stroke-opacity="0.9" transform="rotate(-8)"/>
+    <circle r="136" stroke-width="3" stroke-opacity="0.55"/>
+    <circle r="112" stroke-width="16" stroke-dasharray="3.5 10.5" stroke-opacity="0.7"/>
+    <circle r="86" stroke-width="5" stroke="#b5f1ff"/>
+  </g>
+  <circle cx="256" cy="256" r="78" fill="url(#core)"/>
+</svg>

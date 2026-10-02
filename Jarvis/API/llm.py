@@ -11,6 +11,7 @@ from typing import Any, Iterator, Optional, Union
 import requests
 
 from config import (
+    CITY,
     LLM_HISTORY_MESSAGES,
     LLM_MAX_TOKENS,
     OLLAMA_KEEP_ALIVE,
@@ -47,14 +48,30 @@ TOOLS_HINT = (
     "l'annoncer ni demander de précision : si le lieu n'est pas indiqué, utilise la ville de l'utilisateur. "
     "Ne l'utilise pas pour la conversation courante ni pour la culture générale bien établie."
 )
-FORCED_SEARCH_NOTE = (
-    "[Note système : cette demande exige une recherche web. Appelle l'outil recherche_web avec une requête courte "
-    "et précise, qui reprend les noms propres de la demande. N'ajoute la ville de l'utilisateur que pour un commerce "
-    "ou un service de proximité (pharmacie, cinéma, restaurant, magasin) dont la demande ne cite aucun lieu ; "
-    "jamais pour une question générale (prix, actualité, sport, définition).]"
+# Avant de répondre, le modèle lit tout son prompt, à environ 1 200 jetons par seconde : pour une
+# recherche web, Jarvis lui envoie donc le strict nécessaire (prompts réduits, historique court).
+QUERY_PROMPT = (
+    "Tu écris la requête de moteur de recherche qui répond à la dernière demande de l'utilisateur. Requête courte, "
+    "en français, qui reprend les noms propres de la demande ; pour une suite de conversation, reprends le sujet des "
+    "échanges précédents. Ajoute « {ville} » seulement pour un commerce ou un service de proximité (pharmacie, cinéma, "
+    "restaurant, magasin, piscine) dont la demande ne cite aucun lieu ; jamais pour une question générale (prix, "
+    "actualité, sport, définition). Réponds par la requête seule, sur une ligne, sans guillemets."
 )
+WEB_PERSONA = (
+    "Tu es J.A.R.V.I.S., l'intelligence artificielle personnelle de ton utilisateur, inspirée de l'assistant de "
+    "Tony Stark : un majordome britannique, courtois et posé. Tu le vouvoies et tu l'appelles « {titre} », une seule "
+    "fois par réponse. Tes réponses sont lues à voix haute : phrases courtes et naturelles, en français, sans markdown, "
+    "liste ni emoji. Tu ne dis jamais que tu es un modèle de langage."
+)
+WEB_HISTORY_MESSAGES = 2
+# Une réponse tirée de pages web doit s'en tenir aux faits : à 0,6, le modèle citait parfois un
+# résultat plus ancien que celui demandé.
+WEB_TEMPERATURE = 0.2
 WEB_ANSWER_RULES = (
     "Réponds à la question à partir de ces résultats uniquement, comme si tu avais lu ces pages toi-même. "
+    "Pour le dernier ou le prochain événement (match, concert, sortie), compare les dates à celle d'aujourd'hui : "
+    "retiens le plus récent déjà passé, ou le plus proche à venir. "
+    "Commence par une phrase courte qui donne directement la réponse, sans rappeler la date du jour. "
     "Donne les faits précis qui s'y trouvent (heures, prix, scores, noms, dates, titres) plutôt que de décrire les sites. "
     "Pour des horaires, indique d'abord ceux d'aujourd'hui, puis résume la semaine en regroupant les jours identiques. "
     "Deux à quatre phrases faites pour être dites, avec la source citée en quelques mots (« d'après le site … »). "
@@ -84,6 +101,13 @@ _FALSE_CLAIM = re.compile(
     r"allum|transf|archiv|pay)",
     flags=re.IGNORECASE,
 )
+# Il arrive que le modèle écrive l'appel d'outil en toutes lettres (« recherche_web{requete: "…"} ») au
+# lieu de le déclarer : sans ce garde-fou, Jarvis le lirait à voix haute.
+_TEXT_TOOL_START = re.compile(r"recherche_web|^\s*(?:`{3}|\{|\[)", flags=re.IGNORECASE)
+_TEXT_TOOL_QUERY = re.compile(
+    r"requete\W{0,4}[\"“«]\s*([^\"”»]+?)\s*[\"”»]|recherche_web\s*[({]\s*[\"“«]\s*([^\"”»]+?)\s*[\"”»]",
+    flags=re.IGNORECASE,
+)
 _SENTENCE_END = re.compile(r"([.!?…]+[\"»)]*)(\s+)(?=(\S))")
 _CLAUSE_END = re.compile(r"([,;:])(\s+)(?=\S)")
 # Pour parler plus tôt, la toute première phrase peut être dite en deux temps,
@@ -100,6 +124,7 @@ def load_system_prompt() -> str:
 
 
 SYSTEM_PROMPT = load_system_prompt()
+WEB_PERSONA = WEB_PERSONA.replace("{titre}", TITLE)
 
 
 def unexecuted_action_reply() -> str:
@@ -154,19 +179,46 @@ def _tool_call(message: dict) -> Optional[ToolCall]:
     return ToolCall(name=str(function.get("name") or ""), arguments=arguments if isinstance(arguments, dict) else {})
 
 
-def search_query(history: list[Any], message: str, context: str = "") -> Optional[str]:
-    """Demande au modèle de formuler la requête d'une recherche déjà décidée."""
-    payload = _payload(build_messages(history, f"{message}\n\n{FORCED_SEARCH_NOTE}", context), 0.2, stream=False)
-    payload["tools"] = [WEB_TOOL]
-    payload["options"]["num_predict"] = 60
+def _text_tool_call(text: str) -> ToolCall:
+    """Transforme un appel d'outil écrit en texte en véritable appel."""
+    # Gemma encadre les textes de ses appels par des marqueurs (<|"|>requête<|"|>).
+    text = re.sub(r"<\|\s*\"\s*\|>", '"', text).replace("<|", "").replace("|>", "")
+    match = _TEXT_TOOL_QUERY.search(text)
+    query = (match.group(1) or match.group(2)).strip() if match else ""
+    return ToolCall("recherche_web", {"requete": query} if query else {})
+
+
+def search_query(history: list[Any], message: str) -> Optional[str]:
+    """Fait formuler par le modèle la requête d'une recherche déjà décidée.
+
+    Un prompt de quelques lignes, sans la persona ni l'outil : la requête arrive en moins
+    d'une demi-seconde, au lieu d'une seconde avec le prompt complet.
+    """
+    past = [item for item in list(history)[-5:] if _message_field(item, "role") in {"user", "assistant"}]
+    if past and _message_field(past[-1], "content").strip() == message.strip():
+        past.pop()
+    exchanges = [
+        f"{'Utilisateur' if _message_field(item, 'role') == 'user' else 'Jarvis'} : {_message_field(item, 'content').strip()[:300]}"
+        for item in past[-4:]
+    ]
+    prompt = f"Demande : {message.strip()}"
+    if exchanges:
+        prompt = "Échanges précédents :\n" + "\n".join(exchanges) + f"\n\n{prompt}"
+
+    messages = [{"role": "system", "content": QUERY_PROMPT.replace("{ville}", CITY)}, {"role": "user", "content": prompt}]
+    payload = _payload(messages, 0.1, stream=False)
+    payload["options"]["num_predict"] = 24
     try:
-        res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=30)
+        res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=20)
         res.raise_for_status()
-        call = _tool_call(res.json().get("message", {}))
+        text = (res.json().get("message", {}).get("content") or "").strip()
     except Exception as exc:
         print(f"[LLM] Requête de recherche non formulée: {exc}", flush=True)
         return None
-    query = str(call.arguments.get("requete") or "").strip() if call else ""
+    if "recherche_web" in text.lower():
+        return _text_tool_call(text).arguments.get("requete")
+    query = text.splitlines()[0] if text else ""
+    query = re.sub(r"^requ[êe]te\s*:\s*", "", query, flags=re.IGNORECASE).strip(" \"'«»“”`.")
     return query or None
 
 
@@ -177,9 +229,15 @@ def _message_field(item: Any, key: str) -> str:
     return str(value or "")
 
 
-def build_messages(history: list[Any], message: str, context: str = "") -> list[dict]:
+def build_messages(
+    history: list[Any],
+    message: str,
+    context: str = "",
+    system: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> list[dict]:
     """Assemble le prompt système, le contexte en direct et l'historique récent."""
-    system = SYSTEM_PROMPT
+    system = system or SYSTEM_PROMPT
     if context:
         system += "\n\n" + context
 
@@ -189,7 +247,8 @@ def build_messages(history: list[Any], message: str, context: str = "") -> list[
         past.pop()
 
     messages = [{"role": "system", "content": system}]
-    recent = past[-LLM_HISTORY_MESSAGES:] if LLM_HISTORY_MESSAGES else []
+    keep = LLM_HISTORY_MESSAGES if limit is None else limit
+    recent = past[-keep:] if keep else []
     for item in recent:
         role = _message_field(item, "role")
         content = _message_field(item, "content").strip()
@@ -285,15 +344,18 @@ def chat_stream(
     temperature: float,
     context: str = "",
     tools: Optional[list] = None,
+    system: Optional[str] = None,
+    history_limit: Optional[int] = None,
 ) -> Iterator[Union[str, ToolCall]]:
     """Interroge le modèle et produit la réponse phrase par phrase, dès qu'elle est prête.
 
     Si des outils sont proposés et que le modèle en appelle un, le flux se termine
     par un ToolCall : à l'appelant d'exécuter l'outil puis de relancer la conversation.
+    `system` et `history_limit` remplacent le prompt complet et l'historique habituel.
     """
     buffer = ""
     produced = False
-    payload = _payload(build_messages(history, message, context), temperature, stream=True)
+    payload = _payload(build_messages(history, message, context, system, history_limit), temperature, stream=True)
     if tools:
         payload["tools"] = tools
 
@@ -310,7 +372,9 @@ def chat_stream(
             buffer += chunk.get("message", {}).get("content") or ""
             done = bool(chunk.get("done")) or call is not None
             sentences, buffer = split_sentences(buffer)
-            if not produced and not sentences and not done:
+            # Un appel d'outil écrit en texte n'est jamais découpé : il sera reconnu en entier.
+            writing_call = bool(tools) and bool(_TEXT_TOOL_START.search(buffer))
+            if not produced and not sentences and not done and not writing_call:
                 clause, buffer = first_clause(buffer)
                 if clause:
                     sentences = [clause]
@@ -319,6 +383,9 @@ def chat_stream(
                 buffer = ""
 
             for sentence in sentences:
+                if tools and "recherche_web" in sentence.lower():
+                    yield _text_tool_call(sentence)
+                    return
                 sentence = clean_reply(sentence)
                 if not sentence:
                     continue

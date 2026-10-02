@@ -4,10 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#01050a">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Jarvis">
 <title>J.A.R.V.I.S.</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="./icons/icon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -26,6 +31,7 @@
     <ul class="boot-lines" id="bootLines"></ul>
     <form class="boot-code" id="bootCode" hidden>
       <input id="bootCodeInput" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Code d'accès" aria-label="Code d'accès">
+      <button class="boot-btn" id="bootCodePaste" type="button" hidden>Coller</button>
       <button class="boot-btn" type="submit">Valider</button>
     </form>
     <button class="boot-btn" id="bootBtn" type="button" disabled>Connexion…</button>
@@ -45,6 +51,7 @@
       <button class="chip" id="micToggle" type="button" aria-pressed="false" title="Activer ou couper le micro">Micro</button>
       <button class="chip" id="voiceToggle" type="button" aria-pressed="true" title="Activer ou couper la voix de Jarvis">Voix</button>
       <button class="chip" id="continuousToggle" type="button" aria-pressed="false" title="Conversation continue : inutile de dire « Jarvis » avant chaque phrase">Continu</button>
+      <button class="chip" id="installToggle" type="button" title="Installer Jarvis sur l'écran d'accueil" hidden>App</button>
       <button class="chip" id="helpToggle" type="button" title="Commandes disponibles">Aide</button>
       <button class="chip danger" id="clearBtn" type="button" title="Effacer la conversation">Effacer</button>
     </div>
@@ -145,6 +152,23 @@
       <p>« Jarvis, envoie un mail à … pour lui dire que … »</p>
     </div>
     <pre class="commands" id="commandsHelp">Chargement…</pre>
+  </div>
+</div>
+
+<!-- Installation sur l'écran d'accueil (iPhone) -->
+<div class="drawer" id="install" hidden>
+  <div class="drawer-panel">
+    <button class="drawer-close" id="installClose" type="button" aria-label="Fermer">×</button>
+    <h2 class="panel-title">Jarvis sur l'écran d'accueil</h2>
+    <p class="install-intro">Jarvis s'ouvrira en plein écran, comme une app. Il garde son propre code d'accès : copiez-le d'abord.</p>
+    <ol class="install-steps">
+      <li>Touchez <strong>Copier le code</strong> ci-dessous.</li>
+      <li>Dans Safari, touchez <strong>Partager</strong>, puis <strong>Sur l'écran d'accueil</strong>.</li>
+      <li>Ouvrez Jarvis depuis l'écran d'accueil et touchez <strong>Coller</strong>, puis <strong>Valider</strong>.</li>
+    </ol>
+    <button class="btn" id="copyCodeBtn" type="button">Copier le code</button>
+    <input class="install-code" id="installCode" type="text" readonly hidden aria-label="Code d'accès à copier">
+    <p class="panel-note">Pour joindre Jarvis à tout moment : Tailscale activé sur ce téléphone, et le Mac allumé.</p>
   </div>
 </div>
 

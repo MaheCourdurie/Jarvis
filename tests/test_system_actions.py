@@ -95,6 +95,23 @@ def test_sleep_display(monkeypatch):
     assert runner.calls == [["pmset", "displaysleepnow"]]
 
 
+def test_jarvis_keeps_the_mac_awake_for_the_phone(monkeypatch):
+    started = []
+    monkeypatch.setattr(sa, "SYSTEM", "darwin")
+    monkeypatch.setattr(sa.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(sa.subprocess, "Popen", lambda command, **kwargs: started.append(command) or "caffeinate")
+
+    pid = str(sa.os.getpid())
+    assert sa.keep_awake("secteur") == "caffeinate"
+    assert sa.keep_awake("toujours") == "caffeinate"
+    # Branché seulement (-s) ou sur batterie aussi (-i) ; la consigne tombe quand Jarvis s'arrête (-w).
+    assert started == [["caffeinate", "-s", "-w", pid], ["caffeinate", "-i", "-s", "-w", pid]]
+
+    assert sa.keep_awake("0") is None
+    monkeypatch.setattr(sa, "SYSTEM", "linux")
+    assert sa.keep_awake("secteur") is None and len(started) == 2
+
+
 def test_system_report_and_alerts(monkeypatch):
     metrics = {
         "hostname": "stark-mac",

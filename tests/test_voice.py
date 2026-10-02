@@ -164,6 +164,63 @@ def test_stream_ends_with_the_tool_call(monkeypatch):
     assert produced == [llm.ToolCall("recherche_web", {"requete": "horaires Leclerc Blagnac"})]
 
 
+@pytest.mark.parametrize(
+    "pieces",
+    [
+        ['recherche_web{requete: "concerts Toulouse ', 'ce week-end"}'],
+        ['```tool_code\nprint(recherche_web(requete="concerts Toulouse ce week-end"))\n```'],
+        ['{"name": "recherche_web", "arguments": {"requete": "concerts Toulouse ce week-end"}}'],
+        ['recherche_web{requete:<|"|>concerts Toulouse ce week-end<|"|>}'],
+    ],
+)
+def test_tool_call_written_as_text_is_not_read_aloud(monkeypatch, pieces):
+    # Vu en vrai : le modèle écrit l'appel au lieu de le déclarer, et Jarvis le prononçait.
+    chunks = [{"message": {"content": piece}, "done": False} for piece in pieces] + [{"message": {"content": ""}, "done": True}]
+    monkeypatch.setattr(llm.requests, "post", lambda *args, **kwargs: _FakeStream(chunks))
+    produced = list(llm.chat_stream([], "Quels concerts à Toulouse ce week-end ?", 0.6, tools=[llm.WEB_TOOL]))
+    assert produced == [llm.ToolCall("recherche_web", {"requete": "concerts Toulouse ce week-end"})]
+
+
+class _FakeReply:
+    def __init__(self, content):
+        self.content = content
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"message": {"content": self.content}}
+
+
+def test_search_query_uses_a_short_prompt(monkeypatch):
+    sent = []
+
+    def post(url, json, timeout):
+        sent.append(json)
+        return _FakeReply("Requête : « horaires Leclerc Blagnac lundi »\n")
+
+    monkeypatch.setattr(llm.requests, "post", post)
+    history = [
+        {"role": "user", "content": "Le Leclerc de Blagnac est ouvert dimanche ?"},
+        {"role": "assistant", "content": "Oui, de 9 heures à 12 h 30, Monsieur."},
+        {"role": "user", "content": "Et lundi ?"},
+    ]
+    assert llm.search_query(history, "Et lundi ?") == "horaires Leclerc Blagnac lundi"
+
+    payload = sent[0]
+    system, user = payload["messages"]
+    # Ni la persona complète ni l'outil : le prompt tient en quelques lignes.
+    assert "tools" not in payload and len(system["content"]) < 700 and llm.CITY in system["content"]
+    assert user["content"].startswith("Échanges précédents :\nUtilisateur : Le Leclerc de Blagnac est ouvert dimanche ?")
+    assert user["content"].endswith("Demande : Et lundi ?") and user["content"].count("Et lundi ?") == 1
+    assert payload["options"]["num_predict"] <= 32
+
+
+def test_search_query_gives_up_quietly(monkeypatch):
+    monkeypatch.setattr(llm.requests, "post", lambda *args, **kwargs: _FakeReply(""))
+    assert llm.search_query([], "Quels sont les horaires de la piscine ?") is None
+
+
 def test_gpu_recognition_is_preferred_when_available(monkeypatch):
     monkeypatch.setattr(voice, "STT_ENGINE", "auto")
     monkeypatch.setattr(voice, "_stt_resolved", False)
