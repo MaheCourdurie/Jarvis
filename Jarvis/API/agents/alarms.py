@@ -18,6 +18,7 @@ from config import (
     ALARM_SOUND_ENABLED,
     ALARM_SOUND_FILE,
     ALARM_SOUND_REPEAT,
+    local_now,
 )
 from persona import Reply, TITLE, format_time, format_when, period_label, plural, spoken_time, spoken_when
 
@@ -238,7 +239,7 @@ def alarm_announcement(label: str, now: datetime | None = None) -> str:
     if label.lower().startswith("minuteur"):
         subject = label.partition(":")[2].strip()
         return f"{TITLE}, votre minuteur est écoulé : {subject}." if subject else f"{TITLE}, votre minuteur est écoulé."
-    moment = spoken_time(now or datetime.now())
+    moment = spoken_time(now or local_now())
     if not label or label.lower() in {"alarme", "alarme jarvis", "réveil"}:
         return f"{TITLE}, il est {moment}."
     return f"{TITLE}, il est {moment}. {label}."

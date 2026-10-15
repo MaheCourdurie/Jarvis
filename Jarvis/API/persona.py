@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from config import USER_TITLE
+from config import USER_TITLE, local_now
 
 
 TITLE = USER_TITLE
@@ -68,7 +68,7 @@ def ack() -> str:
 
 def greeting(now: datetime | None = None) -> str:
     """Retourne la salutation adaptée à l'heure (Bonjour / Bonsoir)."""
-    hour = (now or datetime.now()).hour
+    hour = (now or local_now()).hour
     return "Bonjour" if 5 <= hour < 18 else "Bonsoir"
 
 

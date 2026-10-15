@@ -18,7 +18,7 @@ JARVIS_OWN = {"smalltalk", "help", "command_error", "web_answer", "misses"}
 
 
 def test_every_detected_action_has_a_controller_and_an_agent():
-    source = (Path(main.__file__).parent / "core" / "intents.py").read_text()
+    source = "\n".join(path.read_text() for path in (Path(main.__file__).parent / "core" / "intents").glob("*.py"))
     detected = set(re.findall(r'"action":\s*"(\w+)"', source))
     assert detected, "aucune action trouvée dans le routeur"
     assert detected - set(main.jarvis.dispatch) - JARVIS_OWN == set()

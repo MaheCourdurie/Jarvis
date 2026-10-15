@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -68,6 +70,18 @@ def env_list(name: str, default: list[str]) -> list[str]:
 USER_TITLE = env_str("JARVIS_USER_TITLE", "Monsieur")
 # Ville utilisée par défaut pour la météo et le briefing.
 CITY = env_str("JARVIS_CITY", "Paris")
+# Fuseau de l'utilisateur : les heures dites (« à 7h », « dans 10 minutes ») s'y rapportent,
+# même si le poste (ou le serveur qui l'héberge) vit dans un autre fuseau.
+USER_TIMEZONE_NAME = env_str("GOOGLE_TIMEZONE", "Europe/Paris")
+try:
+    USER_TIMEZONE = ZoneInfo(USER_TIMEZONE_NAME)
+except (ZoneInfoNotFoundError, ValueError):
+    USER_TIMEZONE_NAME, USER_TIMEZONE = "Europe/Paris", ZoneInfo("Europe/Paris")
+
+
+def local_now() -> datetime:
+    """L'heure qu'il est chez l'utilisateur, sans fuseau (comme les heures comprises dans les phrases)."""
+    return datetime.now(USER_TIMEZONE).replace(tzinfo=None)
 
 # ── Modèle de langage (Ollama) ─────────────────────────────────────────────
 OLLAMA_URL = env_str("OLLAMA_URL", "http://localhost:11434").rstrip("/")

@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from config import local_now
 from core import intents
 
 
@@ -109,7 +110,7 @@ def test_web_questions():
 
 
 def test_timer_and_reminder():
-    now = datetime.now()
+    now = local_now()
     timer = intents.detect_action("Lance un minuteur de 3 minutes pour les pâtes")["params"]
     assert timer["kind"] == "timer" and timer["title"] == "Minuteur : les pâtes"
     assert timedelta(minutes=2, seconds=50) < datetime.fromisoformat(timer["when"]) - now < timedelta(minutes=3, seconds=10)
@@ -149,17 +150,17 @@ def test_alarm_date_is_not_mistaken_for_an_id():
     ],
 )
 def test_spoken_times(text, hour, minute):
-    parsed = intents._parse_datetime_expression(text)
+    parsed = intents.parse_datetime_expression(text)
     assert (parsed.hour, parsed.minute) == (hour, minute)
 
 
 def test_relative_delays():
-    assert intents._extract_relative_delay("une demi-heure") == timedelta(minutes=30)
-    assert intents._extract_relative_delay("un quart d'heure") == timedelta(minutes=15)
-    assert intents._extract_relative_delay("1h30") == timedelta(hours=1, minutes=30)
-    assert intents._extract_relative_delay("deux minutes") == timedelta(minutes=2)
-    assert intents._extract_relative_delay("45 secondes") == timedelta(seconds=45)
-    assert intents._extract_relative_delay("bientôt") is None
+    assert intents.extract_relative_delay("une demi-heure") == timedelta(minutes=30)
+    assert intents.extract_relative_delay("un quart d'heure") == timedelta(minutes=15)
+    assert intents.extract_relative_delay("1h30") == timedelta(hours=1, minutes=30)
+    assert intents.extract_relative_delay("deux minutes") == timedelta(minutes=2)
+    assert intents.extract_relative_delay("45 secondes") == timedelta(seconds=45)
+    assert intents.extract_relative_delay("bientôt") is None
 
 
 def test_event_range_and_titles():

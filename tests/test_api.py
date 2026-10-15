@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+from config import local_now
 from services import events, llm
 from agents import system as system_actions
 from services import weather
@@ -162,7 +163,7 @@ def test_alarm_wording(client):
 
 
 def test_past_alarm_is_refused(client):
-    past = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+    past = (local_now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
     reply = chat(client, f'/setalarm "{past}" "Trop tard"')
     assert "déjà passée" in reply["reply"] and main.context.alarms.list_alarms() == []
 
