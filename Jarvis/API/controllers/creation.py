@@ -4,6 +4,7 @@ from agents.atelier import AtelierAgent, Workshop
 from agents.code import CodeAgent
 from agents.design import DesignAgent
 from agents.document import DocumentAgent
+from config import CREATION_MODEL, OLLAMA_MODEL
 from core.agent import Context
 from core.controller import Controller
 
@@ -28,4 +29,7 @@ class CreationController(Controller):
         super().__init__([*makers, AtelierAgent(context, self.workshop, makers)])
 
     def occupied_with(self) -> list[str]:
+        # Avec un modèle à part pour les créations, la conversation n'attend pas derrière elles.
+        if CREATION_MODEL and CREATION_MODEL != OLLAMA_MODEL:
+            return []
         return list(self.workshop.busy)

@@ -43,6 +43,7 @@ Commands:
   service  Faire tourner Jarvis en permanence (macOS) :
            service install | start | stop | restart | remove | status
   telegram Bot Telegram qui lance et arrête Jarvis à distance : telegram [setup] | status | remove
+  tune     Régler Ollama pour Jarvis (macOS) : deux demandes à la fois, modèle gardé en mémoire
   test     Lancer un prompt de test rapide sur Ollama
   pytest   Lancer les tests automatiques
   train    Lancer le script de fine-tuning (Jarvis/train.py)
@@ -576,6 +577,34 @@ PLIST_END
   esac
 }
 
+run_tune() {
+  # Ollama traite par défaut une demande à la fois : la conversation attendait derrière une création.
+  # Ces réglages s'appliquent à l'app Ollama (launchctl setenv), qui est ensuite relancée.
+  need_cmd ollama
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "Sur Linux, ajoute ces lignes au service ollama (systemctl edit ollama) :"
+    echo "  Environment=OLLAMA_NUM_PARALLEL=2"
+    echo "  Environment=OLLAMA_KEEP_ALIVE=1h"
+    return
+  fi
+  local parallel keep_alive
+  parallel="$(env_value OLLAMA_NUM_PARALLEL 2)"
+  keep_alive="$(env_value OLLAMA_SERVER_KEEP_ALIVE 1h)"
+  launchctl setenv OLLAMA_NUM_PARALLEL "$parallel"
+  launchctl setenv OLLAMA_KEEP_ALIVE "$keep_alive"
+  echo "Ollama : $parallel demandes à la fois, modèle gardé $keep_alive en mémoire."
+  echo "(Chaque demande en parallèle réserve sa propre mémoire de travail : compte environ 1 Go de plus.)"
+  if pgrep -xq Ollama; then
+    osascript -e 'quit app "Ollama"' >/dev/null 2>&1 || true
+    sleep 2
+    open -a Ollama
+    echo "Ollama relancé avec ces réglages."
+  else
+    echo "Lance Ollama pour qu'il les prenne en compte."
+  fi
+  echo "Ces réglages durent jusqu'au redémarrage du Mac : relance ./run_jarvis.sh tune après un redémarrage."
+}
+
 run_pytest() {
   # Lance les tests automatiques (intentions, persona, pilotage du poste, API).
   activate_venv
@@ -614,6 +643,9 @@ main() {
       ;;
     pytest)
       run_pytest
+      ;;
+    tune)
+      run_tune
       ;;
     api)
       run_api

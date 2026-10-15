@@ -70,7 +70,7 @@ def studio(monkeypatch, tmp_path):
     monkeypatch.setattr(llm, "warm_up", lambda: None)
     monkeypatch.setattr(llm, "ollama_status", lambda: (True, "ok"))
 
-    def fake_complete(system, prompt, temperature, max_tokens, timeout=45, json_mode=False, num_ctx=None, images=None):
+    def fake_complete(system, prompt, temperature, max_tokens, timeout=45, json_mode=False, num_ctx=None, images=None, model=None):
         prompts.append({"system": system, "prompt": prompt, "json": json_mode, "num_ctx": num_ctx})
         return answers.pop(0)
 

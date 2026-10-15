@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from agents.system import SYSTEM, _run
-from config import CREATION_MAX_TOKENS, CREATIONS_DIR, LLM_NUM_CTX
+from config import CREATION_MAX_TOKENS, CREATION_MODEL, CREATIONS_DIR, LLM_NUM_CTX
 from core.agent import Agent, Handler
 from persona import Reply, TITLE, plural
 from services import events, llm, voice
@@ -102,7 +102,8 @@ def generate(system: str, prompt: str, temperature: float, max_tokens: int = CRE
     if room < 512:
         raise CreationError("la création à retoucher est trop longue pour ma mémoire de travail")
     return llm.complete(
-        system, prompt, temperature, min(max_tokens, room), timeout=900, json_mode=json_mode, num_ctx=CREATION_CTX
+        system, prompt, temperature, min(max_tokens, room), timeout=900, json_mode=json_mode, num_ctx=CREATION_CTX,
+        model=CREATION_MODEL or None,
     )
 
 

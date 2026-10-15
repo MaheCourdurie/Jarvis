@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional, Union
 
@@ -133,8 +134,30 @@ def unexecuted_action_reply() -> str:
     return f"Je crains de ne pas avoir pu exécuter cette demande, {TITLE}. Pourriez-vous la reformuler ?"
 
 
+# Dernier état connu d'Ollama : chaque phrase libre le consulte, inutile de le redemander à chaque fois.
+_status_cache: dict[str, Any] = {"at": 0.0, "value": None}
+STATUS_TTL_OK = 30.0
+STATUS_TTL_DOWN = 3.0
+
+
 def ollama_status() -> tuple[bool, str]:
-    """Vérifie si Ollama répond et si le modèle configuré est disponible."""
+    """Vérifie si Ollama répond et si le modèle configuré est disponible (résultat gardé quelques secondes)."""
+    cached = _status_cache["value"]
+    if cached is not None:
+        ttl = STATUS_TTL_OK if cached[0] else STATUS_TTL_DOWN
+        if time.monotonic() - _status_cache["at"] < ttl:
+            return cached
+    value = _read_ollama_status()
+    _status_cache.update(at=time.monotonic(), value=value)
+    return value
+
+
+def forget_ollama_status() -> None:
+    """Oublie l'état connu (après une erreur du modèle : il sera revérifié)."""
+    _status_cache["value"] = None
+
+
+def _read_ollama_status() -> tuple[bool, str]:
     try:
         res = requests.get(f"{OLLAMA_URL}/api/tags", timeout=4)
         res.raise_for_status()
@@ -294,6 +317,7 @@ def complete(
     json_mode: bool = False,
     num_ctx: Optional[int] = None,
     images: Optional[list[str]] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Génération ponctuelle hors conversation (mail, code, page, palette…).
 
@@ -301,6 +325,7 @@ def complete(
     num_ctx : mémoire de travail plus grande que celle de la conversation (une page entière
     à retoucher). Ollama recharge alors le modèle (environ 4 s) : à réserver aux longues tâches.
     images : images en base64 jointes à la demande (le modèle sait les regarder).
+    model : un autre modèle que celui de la conversation (créations : JARVIS_CREATION_MODEL).
     """
     payload = _payload(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
@@ -314,6 +339,8 @@ def complete(
         payload["options"]["num_ctx"] = num_ctx
     if images:
         payload["messages"][-1]["images"] = images
+    if model:
+        payload["model"] = model
     res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
     res.raise_for_status()
     return (res.json().get("message", {}).get("content") or "").strip()

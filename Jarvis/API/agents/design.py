@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from agents.atelier import CREATION_CTX, Creation, CreationError, CreativeAgent, Draft, draft_until_valid, generate
-from config import DESIGN_SELF_REVIEW
+from config import CREATION_MODEL, DESIGN_SELF_REVIEW
 from core.agent import Handler
 from persona import Reply, TITLE
 from services import llm
@@ -131,7 +131,7 @@ def visual_review(kind: str, path: Path, request: str) -> list[str]:
     try:
         answer = llm.complete(
             REVIEW_PROMPT.format(kind=kind, request=request), "Voici le rendu.", 0.1, 250,
-            timeout=180, json_mode=True, num_ctx=CREATION_CTX, images=[image],
+            timeout=180, json_mode=True, num_ctx=CREATION_CTX, images=[image], model=CREATION_MODEL or None,
         )
         verdict = json.loads(answer)
     except Exception as exc:

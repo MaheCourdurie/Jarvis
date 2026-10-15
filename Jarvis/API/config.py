@@ -87,6 +87,9 @@ def local_now() -> datetime:
 OLLAMA_URL = env_str("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = env_str("OLLAMA_MODEL", "jarvis")
 OLLAMA_KEEP_ALIVE = env_str("OLLAMA_KEEP_ALIVE", "30m")
+# Modèle des créations (code, pages, logos, documents), vide = celui de la conversation.
+# Un modèle à part tourne en même temps que la conversation : elle n'attend plus derrière une page.
+CREATION_MODEL = env_str("JARVIS_CREATION_MODEL", "")
 LLM_MAX_TOKENS = env_int("JARVIS_MAX_TOKENS", 320, 32, 2048)
 LLM_HISTORY_MESSAGES = env_int("JARVIS_HISTORY_MESSAGES", 12, 0, 60)
 # Mémoire de travail du modèle, la même pour tous les appels : Ollama ne recharge jamais le

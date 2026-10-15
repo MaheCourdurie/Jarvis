@@ -362,6 +362,7 @@ class Jarvis:
     @staticmethod
     def _llm_error(exc: Exception) -> dict:
         print(f"[LLM] Erreur: {exc}", flush=True)
+        llm.forget_ollama_status()
         reply = Reply(
             text=f"Je rencontre une difficulté avec mon modèle de langage, {TITLE} : {exc}",
             speech=f"Je rencontre une difficulté avec mon modèle de langage, {TITLE}.",
