@@ -582,9 +582,33 @@ function announceAlarm(event) {
 
 // Une création de l'atelier (code, page, logo, palette) est prête, ou a échoué.
 function announceCreation(event) {
-  addEntry('jarvis', `✦ ${event.text || event.speech || event.label}`);
+  const entry = addEntry('jarvis', `✦ ${event.text || event.speech || event.label}`);
+  if (event.url) addCreationLink(entry, event.url);
   voice.speak(event.speech || event.label);
   render();
+}
+
+// Ouvrir une création depuis n'importe quel appareil : le fichier vient de l'API (code d'accès
+// compris), puis s'affiche dans un nouvel onglet ouvert tout de suite (sinon le navigateur le bloque).
+function addCreationLink(entry, url) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'creation-link';
+  button.textContent = 'Ouvrir ici';
+  button.addEventListener('click', async () => {
+    const tab = window.open('', '_blank');
+    try {
+      const res = await fetch(`${API_URL}${url}`, { headers: authHeaders({}) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const link = URL.createObjectURL(blob);
+      if (tab) tab.location = link; else window.location.href = link;
+    } catch (err) {
+      if (tab) tab.close();
+      showToast(`Impossible d'ouvrir la création : ${err.message}`);
+    }
+  });
+  entry.querySelector('.text').appendChild(button);
 }
 
 // Un rappel de Jarvis (rendez-vous qui approche, trajet compris).

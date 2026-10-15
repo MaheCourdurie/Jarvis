@@ -561,3 +561,18 @@ button { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .boot-reactor .ring, .boot-reactor .pulse { animation: none; }
 }
+
+.creation-link {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.creation-link:hover, .creation-link:focus-visible { opacity: 1; }

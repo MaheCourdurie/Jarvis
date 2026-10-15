@@ -171,6 +171,12 @@ class Workshop:
         path.write_text(content, encoding="utf-8")
         return path
 
+    def url_of(self, creation: Creation) -> Optional[str]:
+        """L'adresse où l'ouvrir depuis un autre appareil (l'aperçu d'un logo plutôt que le SVG seul)."""
+        from routes.creations import creation_url
+
+        return creation_url(creation.extra.get("preview") or creation.path, self.root)
+
     def remember(self, creation: Creation) -> None:
         with self._lock:
             if self.last is not None:
@@ -221,7 +227,7 @@ class Workshop:
             where = f"Je l'ai {'ouverte' if feminine else 'ouvert'}" if opened else "C'est enregistré sur le Mac"
             text = f"{creation.summary}\n{where} : {creation.path}".strip()
             speech = f"{_ready_phrase(creation)}, {TITLE}. {creation.summary} {where}.".replace("  ", " ")
-            announce(text, speech, creation.title, path=str(creation.path))
+            announce(text, speech, creation.title, path=str(creation.path), url=self.url_of(creation))
 
         with self._lock:
             self.busy[label] = time.time()
@@ -323,7 +329,76 @@ class AtelierAgent(Agent):
             "open_creation": self.open_last,
             "list_creations": self.list_recent,
             "previous_version": self.previous_version,
+            "choose_creation": self.choose,
+            "export_pdf": self.export_pdf,
+            "make_icons": self.make_icons,
         }
+
+    def choose(self, params: dict) -> Reply:
+        """« La deuxième » : parmi les propositions, garde celle-là ; c'est elle qu'on retouchera."""
+        board = self.workshop.last
+        choices = (board.extra.get("choices") if board else None) or []
+        if not choices:
+            return Reply(text=f"Je n'ai pas de propositions en attente, {TITLE}. Demandez par exemple : propose-moi trois logos pour mon club.")
+        index = int(params.get("index") or 1) - 1
+        if not 0 <= index < len(choices):
+            return Reply(text=f"Il n'y a que {plural(len(choices), 'proposition')}, {TITLE}.")
+        chosen = choices[index]
+        if chosen.kind == "logo" and "icons" not in chosen.extra:
+            from agents.design import export_icons
+
+            icons = export_icons(chosen.path, chosen.title)
+            if icons is not None:
+                chosen.extra["icons"] = icons
+        self.workshop.remember(chosen)
+        if not params.get("remote"):
+            open_creation(chosen)
+        icons = chosen.extra.get("icons")
+        return Reply(
+            text=f"Je garde « {chosen.title} », {TITLE} : c'est elle que je retoucherai.\n{chosen.path}"
+            + (f"\nFavicon et icônes d'app : {icons}" if icons else ""),
+            speech=f"Entendu, {TITLE}. Je garde « {chosen.title} ».",
+            data={"url": self.workshop.url_of(chosen)},
+        )
+
+    def export_pdf(self, params: dict) -> Reply:
+        """Exporte la dernière page ou le dernier document en PDF (avec Chrome, Edge ou Brave)."""
+        from services.pdf import html_to_pdf
+
+        creation = self.workshop.last
+        source = None
+        if creation is not None:
+            source = creation.extra.get("html") or creation.extra.get("preview") or creation.path
+        if source is None or Path(source).suffix.lower() != ".html":
+            return Reply(text=f"Je n'ai pas de page ni de document récent à exporter en PDF, {TITLE}.")
+        pdf = html_to_pdf(Path(source))
+        if pdf is None:
+            return Reply(text=f"Il me faut Chrome, Edge ou Brave sur ce Mac pour exporter en PDF, {TITLE}.")
+        creation.extra["pdf"] = pdf
+        if not params.get("remote"):
+            open_creation(Creation(creation.kind, creation.title, "", pdf, "", "", creation.maker))
+        from routes.creations import creation_url
+
+        return Reply(
+            text=f"« {creation.title} » est exporté en PDF, {TITLE} :\n{pdf}",
+            speech=f"C'est fait, {TITLE} : « {creation.title} » est en PDF.",
+            data={"url": creation_url(pdf, self.workshop.root)},
+        )
+
+    def make_icons(self, params: dict) -> Reply:
+        """Favicon et icônes d'app à partir du dernier logo."""
+        from agents.design import export_icons
+
+        creation = self.workshop.last
+        if creation is None or creation.kind != "logo":
+            return Reply(text=f"Il me faut d'abord un logo, {TITLE}. Demandez par exemple : fais un logo pour mon application.")
+        icons = export_icons(creation.path, creation.title)
+        creation.extra["icons"] = icons
+        made = sorted(path.name for path in icons.iterdir())
+        return Reply(
+            text=f"Favicon et icônes d'app de « {creation.title} », {TITLE} ({icons}) :\n" + "\n".join(f"- {name}" for name in made),
+            speech=f"Les icônes de « {creation.title} » sont prêtes, {TITLE}.",
+        )
 
     def previous_version(self, params: dict) -> Reply:
         """« Reviens à la version précédente » : la précédente redevient celle qu'on retouche."""
@@ -344,6 +419,8 @@ class AtelierAgent(Agent):
             return Reply(text=f"Je n'ai encore rien créé depuis mon démarrage, {TITLE}. Que dois-je concevoir ?")
         if not request:
             return Reply(text=f"Que dois-je changer à « {creation.title} », {TITLE} ?")
+        if creation.extra.get("choices"):
+            return Reply(text=f"Laquelle dois-je retoucher, {TITLE} ? Dites d'abord « la première », « la deuxième »…")
         maker = self.makers[creation.maker]
         label = f"la retouche de « {creation.title} »"
         eta = REVISION_ETA.get(creation.kind, "quelques minutes")

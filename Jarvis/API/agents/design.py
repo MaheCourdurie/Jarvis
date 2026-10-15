@@ -154,6 +154,105 @@ def export_png(svg_path: Path, size: int = 1024) -> Optional[Path]:
         target = svg_path.with_suffix(".png")
         shutil.move(str(rendered[0]), target)
         return target
+
+
+# Les icônes d'une app ou d'un site, tirées du logo : nom du fichier → taille en pixels.
+ICON_SIZES = {"favicon-32.png": 32, "apple-touch-icon.png": 180, "icon-192.png": 192, "icon-512.png": 512}
+ICON_SNIPPET = """<!-- À coller dans le <head> de la page -->
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="site.webmanifest">
+"""
+
+
+def export_icons(svg_path: Path, name: str) -> Optional[Path]:
+    """Favicon et icônes d'app (32, 180, 192, 512 px) dans un dossier à côté du logo.
+
+    Le favicon SVG est toujours là ; les PNG demandent les outils du Mac (Quick Look et sips).
+    """
+    folder = svg_path.with_name(f"{svg_path.stem}-icones")
+    folder.mkdir(exist_ok=True)
+    shutil.copyfile(svg_path, folder / "favicon.svg")
+    (folder / "a-coller-dans-la-page.html").write_text(ICON_SNIPPET, encoding="utf-8")
+    manifest = {
+        "name": name, "short_name": name[:12],
+        "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+                  {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"}],
+    }
+    (folder / "site.webmanifest").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    png = svg_path.with_suffix(".png")
+    if not png.exists():
+        png = export_png(svg_path)
+    if png is not None and shutil.which("sips"):
+        for filename, size in ICON_SIZES.items():
+            subprocess.run(["sips", "-z", str(size), str(size), str(png), "--out", str(folder / filename)], capture_output=True, timeout=30)
+    return folder
+
+
+# Directions données à chaque proposition, pour qu'elles ne se ressemblent pas.
+LOGO_DIRECTIONS = (
+    "Direction : un symbole géométrique épuré, très simple.",
+    "Direction : un monogramme (les initiales du nom) travaillé comme une forme.",
+    "Direction : un emblème ou un badge, plus illustratif.",
+    "Direction : une forme abstraite et dynamique, couleurs vives.",
+)
+PALETTE_DIRECTIONS = (
+    "Direction : des tons doux et naturels.",
+    "Direction : des contrastes francs et modernes.",
+    "Direction : une ambiance sombre et élégante.",
+    "Direction : des couleurs vives et joyeuses.",
+)
+ORDINALS = ("première", "deuxième", "troisième", "quatrième")
+
+
+def render_choices(title: str, choices: list) -> str:
+    """Les propositions côte à côte, numérotées, pour choisir (« la deuxième »)."""
+    tiles = []
+    for index, choice in enumerate(choices):
+        if choice.kind == "logo":
+            body = choice.content
+        else:
+            colors = json.loads(choice.content)["couleurs"]
+            body = "".join(f'<span style="background:{c["hex"]}" title="{html.escape(c["nom"])}"></span>' for c in colors)
+            body = f'<div class="swatches">{body}</div>'
+        tiles.append(
+            f'<figure><div class="art">{body}</div><figcaption><strong>{index + 1}. {html.escape(choice.title)}</strong>'
+            f"<span>{html.escape(choice.summary)}</span></figcaption></figure>"
+        )
+    name = html.escape(title)
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{name}</title>
+<style>
+  body {{ margin: 0; font: 15px/1.5 -apple-system, "Helvetica Neue", Arial, sans-serif; background: #f4f4f6; color: #222; }}
+  main {{ max-width: 1100px; margin: 0 auto; padding: 40px 16px; }}
+  .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }}
+  figure {{ margin: 0; background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,.08); }}
+  .art {{ display: grid; place-items: center; min-height: 240px; padding: 16px; }}
+  .art svg {{ width: 200px; height: 200px; }}
+  .swatches {{ display: flex; width: 100%; height: 200px; border-radius: 12px; overflow: hidden; }}
+  .swatches span {{ flex: 1; }}
+  figcaption {{ display: grid; gap: 4px; padding: 12px 16px 16px; }}
+  figcaption span {{ color: #666; font-size: .9rem; }}
+</style>
+</head>
+<body>
+<main>
+<h1>{name}</h1>
+<p>Dites « la première », « la deuxième »… pour garder celle qui vous plaît.</p>
+<div class="grid">
+{chr(10).join(tiles)}
+</div>
+</main>
+</body>
+</html>
+"""
+
+
 _PLACEHOLDER = re.compile(r"lorem ipsum|\bTODO\b|<!--\s*\.\.\.\s*-->", re.IGNORECASE)
 
 
@@ -327,6 +426,13 @@ def render_logo_preview(title: str, svg: str) -> str:
 """
 
 
+def _choice_count(params: dict) -> int:
+    try:
+        return max(1, min(len(LOGO_DIRECTIONS), int(params.get("count") or 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
 class DesignAgent(CreativeAgent):
     """Conçoit pages, logos et palettes ; les vérifie, les enregistre et les ouvre dans le navigateur."""
 
@@ -353,11 +459,41 @@ class DesignAgent(CreativeAgent):
         request = self._request(params)
         if len(request) < 3:
             return Reply(text=f"Un logo pour qui, {TITLE} ? Par exemple : un logo pour mon club de tennis.")
+        count = _choice_count(params)
+        if count > 1:
+            return self.start_job(
+                f"les {count} propositions de logo", lambda: self._choices("logo", request, count), params, f"{count} minutes environ"
+            )
         return self.start_job("le dessin du logo", lambda: self._logo(request), params, "une minute environ")
 
     def design_palette(self, params: dict) -> Reply:
         request = self._request(params) or "une interface moderne et élégante"
+        count = _choice_count(params)
+        if count > 1:
+            return self.start_job(
+                f"les {count} propositions de palette", lambda: self._choices("palette", request, count), params, "une à deux minutes"
+            )
         return self.start_job("la composition de la palette", lambda: self._palette(request), params, "une trentaine de secondes")
+
+    def _choices(self, kind: str, request: str, count: int) -> Creation:
+        """Plusieurs propositions dans des directions différentes, présentées côte à côte."""
+        directions = LOGO_DIRECTIONS if kind == "logo" else PALETTE_DIRECTIONS
+        choices = []
+        for direction in directions[:count]:
+            try:
+                if kind == "logo":
+                    choices.append(self._logo(request, f"Logo pour : {request}\n{direction}", review=False))
+                else:
+                    choices.append(self._palette(request, f"Palette pour : {request}\n{direction}"))
+            except CreationError as exc:
+                print(f"[ATELIER] Une proposition a échoué : {exc}", flush=True)
+        if not choices:
+            raise CreationError("aucune proposition n'a abouti")
+        title = f"Propositions de {kind} : {request}"[:80]
+        path = self.workshop.save("design", f"propositions {kind} {request}", "html", render_choices(title, choices))
+        names = ", ".join(f"{ORDINALS[index]} : {choice.title}" for index, choice in enumerate(choices))
+        summary = f"{len(choices)} propositions ({names}). Dites « la deuxième » pour garder celle qui vous plaît."
+        return Creation("propositions", title, summary, path, "", request, self.name, "html", {"choices": choices})
 
     # ── Fabrication ───────────────────────────────────────────────────────
 
@@ -382,7 +518,7 @@ class DesignAgent(CreativeAgent):
             summary += " Relue et corrigée après un premier rendu."
         return Creation("page", title, summary, path, draft.content, request, self.name, "html")
 
-    def _logo(self, request: str, prompt: Optional[str] = None, title: str = "") -> Creation:
+    def _logo(self, request: str, prompt: Optional[str] = None, title: str = "", review: bool = True) -> Creation:
         draft = draft_until_valid(LOGO_PROMPT, prompt or f"Logo pour : {request}", check_logo, "svg", temperature=0.6)
         title = title or draft.title or request
         path = self.workshop.save("design", f"logo {title}", "svg", "")
@@ -397,12 +533,17 @@ class DesignAgent(CreativeAgent):
 
         svg = publish(draft.content)
         # Le relecteur regarde l'aperçu : fond clair, fond sombre et petite taille.
-        defects = visual_review("un logo, présenté sur fond clair, sur fond sombre et en petit", preview, request)
+        defects = visual_review("un logo, présenté sur fond clair, sur fond sombre et en petit", preview, request) if review else []
         if defects and (fixed := self._fix(LOGO_PROMPT, check_logo, "svg", title, svg, defects)):
             svg = publish(fixed.content)
             summary += " Relu et corrigé après un premier rendu."
         png = export_png(path)
         extra = {"preview": preview, **({"png": png} if png else {})}
+        if review:  # pas pour chaque proposition : seulement pour le logo retenu
+            icons = export_icons(path, title)
+            if icons is not None:
+                extra["icons"] = icons
+                summary += f" Favicon et icônes d'app dans {icons.name}."
         return Creation("logo", title, summary, path, svg, request, self.name, "svg", extra)
 
     def _palette(self, request: str, prompt: Optional[str] = None) -> Creation:

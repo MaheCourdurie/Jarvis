@@ -35,6 +35,32 @@ _REVISE_VERB = (
 )
 
 
+_ORDINAL_INDEX = {
+    "premiere": 1, "premier": 1, "1": 1, "une": 1, "un": 1,
+    "deuxieme": 2, "seconde": 2, "second": 2, "2": 2, "deux": 2,
+    "troisieme": 3, "3": 3, "trois": 3,
+    "quatrieme": 4, "4": 4, "quatre": 4,
+}
+_CHOICE = re.compile(
+    r"^(?:(?:je |on )?(?:prends|prend|choisis|choisi|garde|gardes|veux|retiens|prefere)\s+)?"
+    r"(?:la|le)\s+(premiere|premier|deuxieme|seconde|second|troisieme|quatrieme)"
+    r"(?:\s+(?:proposition|version|option|idee|logo|palette))?$"
+    r"|^(?:(?:je |on )?(?:prends|choisis|garde|veux|retiens|prefere)\s+)?(?:la |le )?(?:proposition|version|option|numero)\s+(?:numero\s+)?(1|2|3|4|une|un|deux|trois|quatre)$"
+)
+_COUNT = re.compile(
+    r"\b(deux|trois|quatre|2|3|4|plusieurs|quelques|des) (?:propositions?|idees?|pistes?|versions?|variantes?|options?|logos|palettes)\b"
+)
+_COUNT_VALUES = {"deux": 2, "2": 2, "trois": 3, "3": 3, "quatre": 4, "4": 4, "plusieurs": 3, "quelques": 3, "des": 3}
+
+
+def _with_count(params: dict, folded: str) -> dict:
+    """« Propose-moi trois logos » : plusieurs propositions au choix."""
+    match = _COUNT.search(folded)
+    if match:
+        params["count"] = _COUNT_VALUES[match.group(1)]
+    return params
+
+
 def _creation_request(verb: str, noun: str, folded: str) -> bool:
     return re.search(rf"\b{verb}\b(?:[- ]moi| moi)?(?:\s+\S+){{0,5}}?\s+{noun}s?\b", folded) is not None
 
@@ -56,7 +82,7 @@ def parse_code_tools(text: str) -> dict | None:
         return {"action": "code_tests"}
 
     named = re.search(_FILE_NAME, clean)
-    fix = re.match(rf"^(?:corrige|debugge|debug|debogue|repare|reparer|corriger)(?:[- ]moi)?\b", folded)
+    fix = re.match(r"^(?:corrige|debugge|debug|debogue|repare|reparer|corriger)(?:[- ]moi)?\b", folded)
     if fix and named and re.search(rf"\b{_CODE_THING}\b|\.\w+\b", folded):
         return {"action": "fix_code", "params": {"query": named["q"], "request": clean}}
     if fix and re.search(r"\b(?:les )?bugs? (?:de|du|dans) (?:mon|le|ce) (?:script|programme|code)\b", folded):
@@ -100,13 +126,39 @@ def parse_creation(text: str) -> dict | None:
     if re.search(r"\b(?:reviens|retourne|remets|revenir|reprends)\b.*\bversion (?:precedente|d'avant|anterieure)\b|\bannule (?:la |les )?(?:derniere )?(?:modification|retouche)s?\b", folded):
         return {"action": "previous_version"}
 
+    # « La deuxième », « je prends la première proposition » : parmi les propositions.
+    chosen = _CHOICE.match(folded)
+    if chosen:
+        return {"action": "choose_creation", "params": {"index": _ORDINAL_INDEX[chosen.group(1) or chosen.group(2)]}}
+
     if _creation_request(_CREATE_VERB, _DOCUMENT_NOUN, folded):
-        return {"action": "write_document", "params": {"request": request}}
+        params = {"request": request}
+        if re.search(r"\ben pdf\b|\bpdf\b", folded):
+            params["format"] = "pdf"
+        return {"action": "write_document", "params": params}
+
+    # « Exporte-le en PDF », « mets la lettre en PDF » : la dernière page ou le dernier document.
+    if re.search(r"\b(?:exporte|exporter|convertis|convertir|transforme|mets|met|enregistre|sauvegarde|passe|imprime)\b.*\ben pdf\b", folded):
+        return {"action": "export_pdf"}
+
+    # Favicon et icônes d'app à partir du dernier logo.
+    if re.search(r"\bfavicons?\b", folded) or re.search(
+        r"\bicones? (?:d'app(?:li(?:cation)?)?|de l'app(?:li(?:cation)?)?|pour l'app(?:li(?:cation)?)?|du site)\b.*\b(?:logo|avec|a partir)\b"
+        r"|\b(?:fais|tire|decline)[- ]en (?:les |des )?icones?\b",
+        folded,
+    ):
+        return {"action": "make_icons"}
+
+    ideas = re.search(r"\b(?:donne|montre|soumets)[- ]moi (?:des|quelques|plusieurs|deux|trois|quatre) (?:propositions?|idees?|pistes?) de (logo|palette)s?\b", folded)
+    if ideas:
+        params = _with_count({"request": request}, folded)
+        params.setdefault("count", 3)
+        return {"action": "design_logo" if ideas.group(1) == "logo" else "design_palette", "params": params}
 
     if _creation_request(_CREATE_VERB, _LOGO_NOUN, folded):
-        return {"action": "design_logo", "params": {"request": request}}
+        return {"action": "design_logo", "params": _with_count({"request": request}, folded)}
     if _creation_request(_CREATE_VERB, _PALETTE_NOUN, folded):
-        return {"action": "design_palette", "params": {"request": request}}
+        return {"action": "design_palette", "params": _with_count({"request": request}, folded)}
 
     language = _CODE_LANGUAGE.search(folded)
     wants_code = _creation_request(_CREATE_VERB, _CODE_NOUN, folded) and not _NOT_CODE.search(folded)

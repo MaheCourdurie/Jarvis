@@ -325,3 +325,139 @@ def test_spoken_times_use_the_user_timezone(monkeypatch):
     monkeypatch.setattr(config, "USER_TIMEZONE", ZoneInfo("Pacific/Kiritimati"))  # UTC+14
     kiritimati = datetime.now(ZoneInfo("Pacific/Kiritimati")).replace(tzinfo=None)
     assert abs((config.local_now() - kiritimati).total_seconds()) < 5
+
+
+# ── Design : plusieurs propositions, icônes ; documents en PDF ─────────────
+
+from test_creation import LOGO_OK, PALETTE_OK  # noqa: E402
+
+
+def test_several_logos_are_proposed_then_one_is_chosen(studio):  # noqa: F811
+    second = LOGO_OK.replace("Club Tennis", "Monogramme CT").replace("#C6E03B", "#1D7A5F")
+    studio["answers"].extend([LOGO_OK, second, LOGO_OK.replace("Club Tennis", "Badge")])
+    reply = ask("Propose-moi trois logos pour mon club de tennis")
+    assert reply["action"] == "design_logo" and "des 3 propositions de logo" in reply["reply"]
+
+    # Chaque proposition a reçu sa direction, sans relecture visuelle ni icônes.
+    directions = [prompt["prompt"] for prompt in studio["prompts"]]
+    assert "géométrique" in directions[0] and "monogramme" in directions[1] and "emblème" in directions[2]
+    board = studio["opened"][0]
+    assert board.kind == "propositions" and len(board.extra["choices"]) == 3
+    assert "1. Club Tennis" in board.path.read_text() and "3. Badge" in board.path.read_text()
+    assert "la deuxième" in studio["announced"][0]["speech"]
+
+    assert "Laquelle dois-je retoucher" in ask("Change les couleurs du logo")["reply"]
+
+    chosen = ask("Je prends la deuxième")
+    assert chosen["action"] == "choose_creation" and "Monogramme CT" in chosen["reply"]
+    assert studio["workshop"].last.title == "Monogramme CT"
+    icons = studio["workshop"].last.extra["icons"]
+    assert (icons / "favicon.svg").exists() and (icons / "site.webmanifest").exists()
+
+
+def test_choosing_without_proposals(studio):  # noqa: F811
+    assert "pas de propositions en attente" in ask("La deuxième")["reply"]
+
+
+def test_palette_proposals(studio):  # noqa: F811
+    studio["answers"].extend([PALETTE_OK, PALETTE_OK])
+    ask("Crée deux palettes pour un spa")
+    board = studio["opened"][0]
+    assert len(board.extra["choices"]) == 2 and "swatches" in board.path.read_text()
+
+
+def test_a_single_logo_comes_with_its_icons(studio):  # noqa: F811
+    studio["answers"].append(LOGO_OK)
+    ask("Fais un logo pour mon club de tennis")
+    logo = studio["opened"][0]
+    assert "Favicon et icônes d'app" in logo.summary
+    snippet = (logo.extra["icons"] / "a-coller-dans-la-page.html").read_text()
+    assert 'rel="icon" href="favicon.svg"' in snippet
+
+
+def test_icons_need_a_logo(studio):  # noqa: F811
+    assert "Il me faut d'abord un logo" in ask("Fais un favicon avec le logo")["reply"]
+
+
+DOCUMENT_OK = '''TITRE: Lettre de résiliation
+RÉSUMÉ: Une lettre formelle de résiliation.
+```html
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Résiliation</title></head><body>
+<h1>Résiliation de mon abonnement</h1>
+<p>''' + " ".join(["Madame, Monsieur, je vous informe de ma décision de résilier mon abonnement."] * 8) + '''</p>
+<p>[Votre nom]</p></body></html>
+```'''
+
+CHROMIUM = "/opt/pw-browsers/chromium"
+
+
+def test_document_is_delivered_as_pdf_when_asked(studio, monkeypatch):  # noqa: F811
+    import os
+    from pathlib import Path
+
+    if not Path(CHROMIUM).exists():
+        pytest.skip("pas de navigateur pour l'export PDF")
+    monkeypatch.setenv("JARVIS_CHROME", CHROMIUM)
+    studio["answers"].append(DOCUMENT_OK)
+    reply = ask("Rédige une lettre de résiliation de ma salle de sport en PDF")
+    assert reply["action"] == "write_document"
+    document = studio["opened"][0]
+    assert document.path.suffix == ".pdf" and document.path.read_bytes().startswith(b"%PDF")
+    assert os.path.exists(document.extra["html"])
+
+
+def test_pdf_export_without_browser(studio, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("JARVIS_CHROME", "/nulle/part/chrome")
+    studio["answers"].append(DOCUMENT_OK)
+    ask("Rédige une lettre de résiliation de ma salle de sport")
+    reply = ask("Exporte-le en PDF")
+    assert reply["action"] == "export_pdf" and "Il me faut Chrome, Edge ou Brave" in reply["reply"]
+
+
+def test_pdf_export_needs_a_page_or_a_document(studio):  # noqa: F811
+    assert "pas de page ni de document récent" in ask("Mets-le en PDF")["reply"]
+
+
+# ── Les créations, consultables depuis le téléphone ───────────────────────
+
+def test_creations_are_served_to_other_devices(studio, monkeypatch):  # noqa: F811
+    from routes import creations
+
+    studio["answers"].append(SCRIPT_OK)
+    ask("Crée-moi un script Python qui dit bonjour")
+    url = studio["announced"][0]["url"]
+    assert url == "/api/creations/code/bonjour-le-monde.py"
+
+    with TestClient(main.app, base_url="http://localhost") as http:
+        listing = http.get("/api/creations").json()["creations"]
+        assert listing[0]["url"] == url
+        served = http.get(url)
+        assert served.status_code == 200 and 'print("Bonjour")' in served.text
+        assert served.headers["content-type"].startswith("text/plain")
+        assert http.get("/api/creations/../../config.py").status_code == 404
+        assert http.get("/api/creations/code/%2E%2E/%2E%2E/secret").status_code == 404
+        # Depuis un autre appareil (relayé par Tailscale), le code d'accès reste exigé.
+        relayed = {"X-Forwarded-For": "100.90.121.78", "Tailscale-User-Login": "moi@exemple.com"}
+        assert http.get(url, headers=relayed).status_code in {401, 403}
+    assert creations.creation_url(studio["workshop"].root.parent / "ailleurs.txt", studio["workshop"].root) is None
+
+
+@pytest.mark.parametrize("phrase,action,params", [
+    ("Donne-moi des propositions de logo pour mon club", "design_logo", {"count": 3}),
+    ("Crée deux palettes pour un spa", "design_palette", {"count": 2}),
+    ("La deuxième", "choose_creation", {"index": 2}),
+    ("Proposition numéro 3", "choose_creation", {"index": 3}),
+    ("Rédige une lettre de motivation en PDF", "write_document", {"format": "pdf"}),
+    ("Mets la lettre en PDF", "export_pdf", None),
+    ("Fais-en des icônes", "make_icons", None),
+    ("Fais un favicon avec le logo", "make_icons", None),
+])
+def test_design_phrases_are_understood(phrase, action, params):
+    detected = detect_action(phrase)
+    assert detected["action"] == action
+    for key, value in (params or {}).items():
+        assert detected["params"][key] == value
+
+
+def test_ordinals_alone_are_not_mistaken():
+    assert detect_action("La deuxième guerre mondiale") is None

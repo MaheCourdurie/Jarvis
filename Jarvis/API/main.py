@@ -24,7 +24,7 @@ from controllers.ordinateur import OrdinateurController
 from controllers.organisation import OrganisationController
 from controllers.routines import RoutinesController
 from controllers.savoir import SavoirController
-from routes import chat, google, hud, security, voice as voice_routes
+from routes import chat, creations, google, hud, security, voice as voice_routes
 from core.agent import Context
 from core.jarvis import VERSION, Jarvis
 from services import llm, voice
@@ -41,13 +41,14 @@ context = Context(google=google_client, alarms=alarms, dashboard=Dashboard(googl
 # ── Jarvis, ses contrôleurs, et leurs agents ──────────────────────────────
 savoir = SavoirController(context)
 routines = RoutinesController(context)
+creation = CreationController(context)
 jarvis = Jarvis(
     context,
     controllers=[
         OrganisationController(context),
         OrdinateurController(context),
         savoir,
-        CreationController(context),
+        creation,
         routines,
         MaisonController(context),
     ],
@@ -114,6 +115,7 @@ app.include_router(chat.router(jarvis))
 app.include_router(voice_routes.router())
 app.include_router(hud.router(jarvis))
 app.include_router(google.router(context))
+app.include_router(creations.router(creation.workshop))
 hud.mount_interface(app)
 
 

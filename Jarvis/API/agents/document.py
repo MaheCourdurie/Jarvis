@@ -1,4 +1,4 @@
-"""Agent documents : lettres, CV, comptes-rendus, rédigés puis livrés en .docx (Word, Pages)."""
+"""Agent documents : lettres, CV, comptes-rendus, rédigés puis livrés en .docx (Word, Pages) ou en PDF."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from typing import Optional
 
 from agents.atelier import Creation, CreativeAgent, Draft, draft_until_valid
 from core.agent import Handler
-from persona import Reply, TITLE
+from persona import Reply, TITLE, fold
+from services.pdf import html_to_pdf
 
 PROMPT = """Tu es l'agent de rédaction de J.A.R.V.I.S. : un rédacteur professionnel francophone.
 Tu livres un document complet, prêt à imprimer ou à envoyer.
@@ -60,9 +61,12 @@ class DocumentAgent(CreativeAgent):
         request = str(params.get("request") or "").strip()
         if len(request) < 8:
             return Reply(text=f"Quel document, {TITLE} ? Par exemple : une lettre de résiliation de mon abonnement de salle de sport.")
-        return self.start_job("la rédaction du document", lambda: self._make(f"Document demandé : {request}", request), params, "une à deux minutes")
+        pdf = params.get("format") == "pdf" or "pdf" in fold(request)
+        return self.start_job(
+            "la rédaction du document", lambda: self._make(f"Document demandé : {request}", request, pdf=pdf), params, "une à deux minutes"
+        )
 
-    def _make(self, prompt: str, request: str, title: str = "") -> Creation:
+    def _make(self, prompt: str, request: str, title: str = "", pdf: bool = False) -> Creation:
         draft = draft_until_valid(PROMPT, prompt, check_document, "html", temperature=0.4)
         title = title or draft.title or request
         source = self.workshop.save("documents", title, "html", draft.content)
@@ -73,10 +77,18 @@ class DocumentAgent(CreativeAgent):
             if docx.exists():
                 path = docx
         summary = draft.summary or "Votre document."
+        extra = {"html": source}
+        if pdf:
+            exported = html_to_pdf(source)
+            if exported is not None:
+                path = extra["pdf"] = exported
+            else:
+                summary += " (Aucun navigateur Chrome, Edge ou Brave pour l'export en PDF.)"
         if re.search(r"\[[^\]]{2,40}\]", draft.content):
             summary += " Les éléments entre crochets sont à compléter."
-        return Creation("document", title, summary, path, draft.content, request, self.name, "html", {"html": source})
+        return Creation("document", title, summary, path, draft.content, request, self.name, "html", extra)
 
     def revise(self, creation: Creation, request: str) -> Creation:
         prompt = REVISE_PROMPT.format(title=creation.title, content=creation.content, request=request)
-        return self._make(prompt, f"{creation.request} — {request}", creation.title)
+        pdf = "pdf" in creation.extra or "pdf" in fold(request)
+        return self._make(prompt, f"{creation.request} — {request}", creation.title, pdf=pdf)
