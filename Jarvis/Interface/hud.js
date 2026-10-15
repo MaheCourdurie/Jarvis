@@ -565,6 +565,7 @@ async function pollEvents() {
     for (const event of data.events || []) {
       if (event.type === 'alarm') announceAlarm(event);
       else if (event.type === 'creation') announceCreation(event);
+      else if (event.type === 'notice') announceNotice(event);
     }
   } catch (err) {
     /* l'API redémarre peut-être : on réessaiera */
@@ -583,6 +584,14 @@ function announceAlarm(event) {
 function announceCreation(event) {
   addEntry('jarvis', `✦ ${event.text || event.speech || event.label}`);
   voice.speak(event.speech || event.label);
+  render();
+}
+
+// Un rappel de Jarvis (rendez-vous qui approche, trajet compris).
+function announceNotice(event) {
+  state.alertUntil = Date.now() + 6000;
+  addEntry('jarvis', `🔔 ${event.text || event.speech || event.label}`, 'alert');
+  voice.speak(event.speech || event.text || event.label);
   render();
 }
 

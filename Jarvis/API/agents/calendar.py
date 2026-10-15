@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from agents.heads_up import MeetingWatcher
 from core.agent import Agent, Handler
 from persona import (
     Reply,
@@ -305,6 +306,17 @@ class CalendarAgent(Agent):
     needs_google = True
     writes = frozenset({"add_event", "delete_event", "delete_events_range", "move_event"})
     confirmable = frozenset({"delete_events_range"})
+
+    def __init__(self, context) -> None:
+        super().__init__(context)
+        # Prévient avant chaque rendez-vous, trajet compris (agents/heads_up.py).
+        self.watcher = MeetingWatcher(lambda: self.context.google)
+        self._started = False
+
+    def start(self) -> None:
+        if not self._started:
+            self._started = True
+            self.watcher.start(self.context.timezone)
 
     def handlers(self) -> dict[str, Handler]:
         google = lambda: self.context.google  # noqa: E731  (lu à chaque appel, jamais copié)

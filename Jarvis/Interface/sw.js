@@ -2,7 +2,7 @@
 // quand le Mac est injoignable (en veille, Tailscale coupé). Elle dit alors ce qui manque et se
 // reconnecte d'elle-même. L'API n'est jamais mise en cache : ses réponses sont personnelles.
 
-const CACHE = 'jarvis-interface-v1';
+const CACHE = 'jarvis-interface-v2';
 const SHELL = [
   './',
   './hud.css',

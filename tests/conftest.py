@@ -53,6 +53,9 @@ os.environ.update(
         # La relecture visuelle demande Quick Look et le modèle : testée à part.
         "JARVIS_DESIGN_SELF_REVIEW": "0",
         "JARVIS_HOME_ADDRESS": "",
+        # Le veilleur de rendez-vous est testé à part, sans tâche de fond.
+        "JARVIS_MEETING_REMINDER_MINUTES": "0",
+        "JARVIS_MAIL_TRIAGE": "1",
     }
 )
 

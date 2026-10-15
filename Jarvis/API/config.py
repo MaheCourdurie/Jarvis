@@ -125,6 +125,11 @@ TELEGRAM_BOT_TOKEN = env_str("TELEGRAM_BOT_TOKEN", "")
 # Identifiants des comptes Telegram autorisés à piloter Jarvis ; tous les autres sont ignorés.
 TELEGRAM_ALLOWED_USERS = env_list("TELEGRAM_ALLOWED_USERS", [])
 
+# Prévenir avant un rendez-vous de l'agenda : minutes de marge avant le départ (trajet compris), 0 = jamais.
+MEETING_REMINDER_MINUTES = env_int("JARVIS_MEETING_REMINDER_MINUTES", 10, 0, 120)
+# Le modèle trie les mails non lus (« rien d'urgent : deux factures ») quand on demande ses mails.
+MAIL_TRIAGE = env_flag("JARVIS_MAIL_TRIAGE", True)
+
 # ── Voix ───────────────────────────────────────────────────────────────────
 # auto | piper | say | browser | off
 TTS_ENGINE = env_str("JARVIS_TTS_ENGINE", "auto").lower()

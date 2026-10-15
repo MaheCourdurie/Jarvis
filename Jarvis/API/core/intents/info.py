@@ -14,7 +14,7 @@ _NOT_A_CITY = {"demain", "aujourd'hui", "maintenant", "moment", "semaine", "mati
 
 _TIME_WORDS = re.compile(
     r"\b(?:semaine|week-?end|jours?|matin|soir|apres-midi|nuit|demain|apres-demain|aujourd'hui|maintenant"
-    r"|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|prochains?)\b"
+    r"|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|prochains?|heures?)\b"
 )
 
 
@@ -70,7 +70,11 @@ def parse_info(text: str) -> dict | None:
         folded,
     ):
 
-        return {"action": "weather", "params": {"city": _extract_city(text), "day": weather_day(folded)}}
+        place = re.sub(r"\s*\b(?:heure par heure|dans les prochaines heures)\b", "", text, flags=re.IGNORECASE)
+        params = {"city": _extract_city(place), "day": weather_day(folded)}
+        if params["day"] == "hours" and weather_period(folded):
+            params["period"] = weather_period(folded)
+        return {"action": "weather", "params": params}
 
     if re.search(
         r"\bbriefing\b|\bfai(?:s|tes)[- ](?:moi )?(?:le|un) point\b|\bpoint sur (?:la|ma) journee\b"
@@ -80,6 +84,19 @@ def parse_info(text: str) -> dict | None:
         return {"action": "briefing"}
 
     return None
+
+
+_HOURLY = re.compile(
+    r"\bheure par heure\b|\bprochaines heures\b|\b(?:a )?quelle heure (?:va[- ]t[- ]il|il va) (?:pleuvoir|neiger)\b"
+    r"|\bquand (?:va[- ]t[- ]il|est[- ]ce qu'il va|il va) (?:pleuvoir|neiger)\b|\bce (?:matin|midi|soir)\b"
+    r"|\bcet apres-midi\b|\bcette nuit\b|\bcette apres-midi\b"
+)
+
+
+def weather_period(folded: str) -> str | None:
+    """Le moment de la journée demandé (« ce soir » → soir), pour la météo heure par heure."""
+    match = re.search(r"\b(?:ce|cet|cette) (matin|midi|apres-midi|soir|nuit)\b", folded)
+    return match.group(1) if match else None
 
 
 def weather_day(folded: str):
@@ -95,6 +112,8 @@ def weather_day(folded: str):
         return int(later.group(1))
     if re.search(r"\bdemain\b", folded):
         return "tomorrow"
+    if _HOURLY.search(folded):
+        return "hours"
     for name, index in WEEKDAY_INDEX.items():
         if re.search(rf"\b{name}\b", folded):
             offset = (index - local_now().weekday()) % 7

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import config  # noqa: F401  (premier import local : charge le .env avant les autres modules)
 from fastapi import FastAPI
@@ -61,6 +62,13 @@ _server = None
 _on_demand = False
 
 
+def _keeps_awake() -> bool:
+    """Une alarme en attente ou un rendez-vous proche à annoncer : Jarvis reste allumé."""
+    watcher = getattr(jarvis.routes.get("add_event"), "watcher", None)
+    soon = watcher is not None and watcher.soon(datetime.now(context.timezone))
+    return bool(context.alarms.list_alarms()) or soon
+
+
 def _go_to_sleep() -> None:
     print(f"[JARVIS] Aucune demande depuis {IDLE_MINUTES} min : arrêt. macOS me relancera à la prochaine demande.", flush=True)
     if _server is not None:
@@ -79,7 +87,7 @@ async def lifespan(_app: FastAPI):
     if awake is not None:
         print(f"[JARVIS] Mise en veille du Mac empêchée ({KEEP_AWAKE}) tant que Jarvis tourne", flush=True)
     if _on_demand and IDLE_MINUTES:
-        watch_idle(activity, IDLE_MINUTES, lambda: bool(context.alarms.list_alarms()), _go_to_sleep)
+        watch_idle(activity, IDLE_MINUTES, _keeps_awake, _go_to_sleep)
         print(f"[JARVIS] Lancé à la demande : arrêt après {IDLE_MINUTES} min sans demande", flush=True)
     for controller in jarvis.controllers:
         print(f"[JARVIS] {controller.name} → {', '.join(agent.name for agent in controller.agents)}", flush=True)

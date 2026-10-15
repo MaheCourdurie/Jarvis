@@ -6,9 +6,12 @@ from typing import Any
 
 from services import llm
 from core.agent import Agent, Handler
-from config import load_contacts
+from config import MAIL_TRIAGE, load_contacts
 from persona import Reply, TITLE, plural
 
+
+# Nombre de non lus relevés (et triés par le modèle) quand on demande ses mails.
+MAIL_RESUME_LIMIT = 8
 
 EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -250,6 +253,47 @@ def format_mail_resume(items: list[dict], limit: int = 5) -> Reply:
         verb = "Viennent" if len(others) > 1 else "Vient"
         speech += f" {verb} ensuite " + " et ".join(others) + "."
     return Reply(text="\n".join(lines), speech=speech, data={"unread": count})
+
+
+TRIAGE_PROMPT = (
+    "Tu es J.A.R.V.I.S. Tu reçois les mails non lus de {titre} (expéditeur, objet, extrait). En une ou deux phrases "
+    "courtes, faites pour être dites à voix haute, en le vouvoyant : signale d'abord ce qui demande son attention "
+    "(rendez-vous, échéance, paiement, réponse attendue, message d'un proche), puis regroupe le reste par type "
+    "(factures, lettres d'information, notifications, publicités). S'il n'y a rien d'important, dis-le. "
+    "N'invente rien, ne cite aucun lien. Commence directement, sans formule d'introduction."
+)
+
+
+def triage_mails(items: list[dict]) -> str | None:
+    """Le modèle trie la boîte : « Rien d'urgent, Monsieur : deux factures et une lettre d'information. »"""
+    if len(items) < 2 or not MAIL_TRIAGE:
+        return None
+    online, _reason = llm.ollama_status()
+    if not online:
+        return None
+    listing = "\n".join(
+        f"- {_sender(item)} | {item.get('subject') or '(sans objet)'} | "
+        f"{(item.get('bodyPreview') or '').replace(chr(10), ' ').strip()[:160]}"
+        for item in items[:10]
+    )
+    try:
+        answer = llm.complete(TRIAGE_PROMPT.format(titre=TITLE), listing, 0.2, 140, timeout=40)
+    except Exception as exc:
+        print(f"[MAIL] Tri impossible: {exc}", flush=True)
+        return None
+    answer = llm.clean_reply(answer).strip()
+    return answer or None
+
+
+def summarize_inbox(items: list[dict]) -> Reply:
+    """Liste des non lus, avec le tri du modèle en tête de la réponse dite."""
+    reply = format_mail_resume(items, limit=MAIL_RESUME_LIMIT)
+    triage = triage_mails(items)
+    if not triage:
+        return reply
+    count = reply.data.get("unread", len(items))
+    spoken = f"{plural(count, 'message non lu', 'messages non lus')}, {TITLE}. {triage}"
+    return Reply(text=f"En bref : {triage}\n\n{reply.text}", speech=spoken[:1].upper() + spoken[1:], data=reply.data)
 
 
 def format_last_mail(item: dict | None) -> Reply:
@@ -569,7 +613,7 @@ class MailAgent(Agent):
 
     def handlers(self) -> dict[str, Handler]:
         return {
-            "mail_resume": lambda params: format_mail_resume(self.context.google.get_unread_emails(limit=5)),
+            "mail_resume": lambda params: summarize_inbox(self.context.google.get_unread_emails(limit=MAIL_RESUME_LIMIT)),
             "mail_last": lambda params: format_last_mail(self.context.google.get_latest_email()),
             "send_mail": lambda params: handle_send_mail(self.context.google, params),
             "search_mail": lambda params: handle_search_mail(self.context.google, params),

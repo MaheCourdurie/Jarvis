@@ -115,6 +115,27 @@ def _day(daily: dict, index: int) -> dict | None:
     return day
 
 
+def _hours(hourly: dict, now_iso: str | None, count: int = 24) -> list[dict]:
+    """Les prochaines heures (à partir de l'heure en cours) : heure, température, pluie, ciel."""
+    times = hourly.get("time") or []
+    start = 0
+    if now_iso:
+        current_hour = str(now_iso)[:13]
+        start = next((index for index, value in enumerate(times) if str(value)[:13] >= current_hour), 0)
+    hours = []
+    for index in range(start, min(start + count, len(times))):
+        try:
+            hours.append({
+                "time": times[index],
+                "temperature": round(hourly["temperature_2m"][index]),
+                "rain_probability": int(hourly["precipitation_probability"][index] or 0),
+                "description": describe_code(hourly["weather_code"][index]),
+            })
+        except (KeyError, IndexError, TypeError):
+            break
+    return hours
+
+
 def get_weather(city: str | None = None) -> dict:
     """Retourne la météo actuelle et les prévisions (aujourd'hui, demain) d'une ville."""
     requested = (city or CITY).strip() or CITY
@@ -134,6 +155,7 @@ def get_weather(city: str | None = None) -> dict:
                 "longitude": place["longitude"],
                 "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m,is_day",
                 "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset",
+                "hourly": "temperature_2m,precipitation_probability,weather_code",
                 "timezone": "auto",
                 "forecast_days": 7,
             },
@@ -158,6 +180,7 @@ def get_weather(city: str | None = None) -> dict:
         "today": _day(daily, 0),
         "tomorrow": _day(daily, 1),
         "days": [day for day in (_day(daily, index) for index in range(7)) if day],
+        "hours": _hours(payload.get("hourly") or {}, current.get("time")),
         "latitude": place["latitude"],
         "longitude": place["longitude"],
     }
@@ -210,6 +233,8 @@ def handle_weather(params: dict | None = None) -> Reply:
         return Reply(text=f"Je ne parviens pas à joindre le service météo, {TITLE}.")
 
     day = params.get("day")
+    if day == "hours":
+        return _hourly_reply(weather, params.get("period"))
     if day in {"week", "weekend"} or isinstance(day, int) and day >= 2:
         return _forecast_reply(weather, day)
 
@@ -277,6 +302,56 @@ def _forecast_reply(weather: dict, day) -> Reply:
         speech = f"À {city}, le plus doux sera {_day_name(warmest[1], warmest[0])}, avec {spoken_degrees(warmest[1]['max'])}."
         speech += f" De la pluie probable {', '.join(rainy)}." if rainy else " Pas de pluie marquée en vue."
     return Reply(text=f"Prévisions à {city}, {TITLE} :\n" + "\n".join(lines), speech=speech, data=weather)
+
+
+# Moments de la journée : heures de début et de fin (la nuit déborde sur le lendemain).
+PERIODS = {"matin": (6, 12), "midi": (11, 14), "apres-midi": (12, 18), "soir": (18, 24), "nuit": (21, 30)}
+PERIOD_LABELS = {"matin": "ce matin", "midi": "ce midi", "apres-midi": "cet après-midi", "soir": "ce soir", "nuit": "cette nuit"}
+
+
+def _hour_of(item: dict) -> int:
+    return datetime.fromisoformat(item["time"]).hour
+
+
+def _hourly_reply(weather: dict, period: str | None = None) -> Reply:
+    """Les prochaines heures, ou un moment de la journée : températures et heure de la pluie."""
+    hours = weather.get("hours") or []
+    city = weather["city"]
+    if period in PERIODS:
+        start, end = PERIODS[period]
+        first_day = hours[0]["time"][:10] if hours else ""
+        selected = []
+        for item in hours:
+            hour = _hour_of(item) + (24 if item["time"][:10] > first_day else 0)
+            if start <= hour < end:
+                selected.append(item)
+        label = PERIOD_LABELS[period]
+    else:
+        selected, label = hours[:12], "dans les prochaines heures"
+    if not selected:
+        return Reply(text=f"Je n'ai pas de prévisions heure par heure pour {label}, {TITLE}.", data=weather)
+
+    lines = [
+        f"- {_hour_of(item)} h : {item['temperature']} °C, {item['description']}, pluie {item['rain_probability']} %"
+        for item in selected
+    ]
+    low = min(item["temperature"] for item in selected)
+    high = max(item["temperature"] for item in selected)
+    rainy = next((item for item in selected if item["rain_probability"] >= 50), None)
+    temperatures = spoken_degrees(low) if low == high else _spoken_range(low, high)
+    speech = f"À {city}, {label}, {temperatures}."
+    if rainy:
+        dry_until = rainy is not selected[0]
+        speech += (
+            f" De la pluie probable à partir de {_hour_of(rainy)} heures."
+            if dry_until
+            else f" De la pluie probable dès maintenant ({rainy['rain_probability']} %)."
+        )
+        speech += " Je vous suggère de prévoir un parapluie."
+    else:
+        speech += " Pas de pluie en vue."
+    title = f"{label.capitalize()} à {city}, {TITLE} :"
+    return Reply(text=title + "\n" + "\n".join(lines), speech=speech, data=weather)
 
 
 def handle_sun(params: dict | None = None) -> Reply:
