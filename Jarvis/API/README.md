@@ -32,34 +32,36 @@ Les dépendances ne vont que vers le bas : une route appelle Jarvis, Jarvis appe
 
 | Contrôleur | Agent | Fichier | Actions |
 |---|---|---|---|
-| organisation | messagerie | `agents/mail.py` | `mail_resume`, `mail_last`, `send_mail`, `search_mail`, `read_mail`, `reply_mail`, `archive_mail`, `trash_mail` |
-| organisation | agenda | `agents/calendar.py` | `events_week`, `events_range`, `availability_week`, `add_event` (récurrent avec une règle RRULE), `move_event`, `delete_event`, `delete_events_range` |
+| organisation | messagerie | `agents/mail.py` | `mail_resume` (non lus triés par le modèle), `mail_last`, `send_mail`, `search_mail`, `read_mail`, `reply_mail`, `archive_mail`, `trash_mail` |
+| organisation | agenda | `agents/calendar.py` | `events_week`, `events_range`, `availability_week`, `add_event` (récurrent avec une règle RRULE), `move_event`, `delete_event`, `delete_events_range` ; son veilleur (`agents/heads_up.py`) prévient avant chaque rendez-vous, trajet compris |
 | organisation | alarmes | `agents/alarms.py` | `set_alarm` (récurrente avec `repeat`), `snooze_alarm`, `list_alarms`, `delete_alarm`, `delete_alarms_range`, `delete_alarms_all`, `delete_timers` |
 | organisation | notes | `agents/notes.py` | `add_note` (app Notes), `add_to_list`, `read_list` (app Rappels) |
 | organisation | trajets | `agents/travel.py` | `travel_time` (Nominatim + routage OpenStreetMap, voiture, vélo, pied) |
 | ordinateur | poste | `agents/system.py` | `system_status`, `open_app`, `quit_app`, `open_url`, `volume`, `sleep_display`, `brightness`, `dark_mode`, `lock_screen`, `screenshot`, `wifi`, `bluetooth`, `do_not_disturb` |
-| ordinateur | informations | `agents/info.py` | `time`, `date`, `weather` (7 jours), `sun`, `air_quality`, `briefing` |
+| ordinateur | informations | `agents/info.py` | `time`, `date`, `weather` (7 jours, ou heure par heure : `day="hours"`, `period` = matin, après-midi, soir, nuit), `sun`, `air_quality`, `briefing` |
 | ordinateur | musique | `agents/music.py` | `music` (`play`, `pause`, `next`, `previous`, `current`, `play_query`) |
 | ordinateur | fichiers | `agents/files.py` | `find_file` (Spotlight), `open_file`, `summarize_file` (texte, Word, PDF via PDFKit) |
 | savoir | web | `agents/web.py` | `web_search` (navigateur), `summarize_url` ; lit les pages pour l'agent de conversation |
 | savoir | conversation | `agents/conversation.py` | aucune : reçoit tout ce qu'aucun autre agent n'a pris |
 | savoir | mémoire | `agents/memory.py` | `remember`, `recall`, `forget` ; ses faits sont donnés au modèle pendant la conversation |
 | savoir | traduction | `agents/translate.py` | `translate` |
-| savoir | vision | `agents/vision.py` | `look_screen` (capture + modèle qui voit les images) |
-| création | code | `agents/code.py` | `write_code` |
-| création | design | `agents/design.py` | `design_page`, `design_logo`, `design_palette` |
-| création | documents | `agents/document.py` | `write_document` (HTML converti en .docx par `textutil`) |
-| création | atelier | `agents/atelier.py` | `revise_creation`, `open_creation`, `list_creations`, `previous_version` |
-| routines | routines | `agents/routines.py` | `run_routine`, `list_routines`, `create_routine` |
+| savoir | vision | `agents/vision.py` | `look_screen` (capture + modèle qui voit les images), `look_image` (une image du Mac, retrouvée par son nom) |
+| création | code | `agents/code.py` | `write_code`, `code_tests` (tests du dernier programme, lancés en bac à sable), `fix_code` (version corrigée enregistrée à part), `explain_code` |
+| création | design | `agents/design.py` | `design_page`, `design_logo` (avec favicon et icônes d'app), `design_palette` ; `count` = plusieurs propositions |
+| création | documents | `agents/document.py` | `write_document` (HTML converti en .docx par `textutil`, ou en PDF : `format="pdf"`) |
+| création | atelier | `agents/atelier.py` | `revise_creation`, `open_creation`, `list_creations`, `previous_version`, `choose_creation` (« la deuxième »), `export_pdf`, `make_icons` |
+| routines | routines | `agents/routines.py` | `run_routine`, `list_routines`, `create_routine`, `schedule_routine` (à heure fixe), `unschedule_routine` |
 | maison | maison | `agents/home.py` | `run_shortcut`, `list_shortcuts` (app Raccourcis, donc HomeKit) |
 
 Jarvis répond lui-même aux politesses, à l'aide, aux erreurs de commande et à `/incompris`.
 
 **Routage de secours** (`core/fallback.py`) : une phrase qui ressemble à un ordre mais qu'aucun parseur ne reconnaît est soumise au modèle, qui choisit dans une liste fermée d'actions sans risque (rien qui envoie, supprime ou demande une date). La phrase est notée dans `JARVIS_MISSES_FILE` avec le choix du modèle, pour être apprise au routeur et ajoutée à l'examen.
 
-**Phrases** : `core/intents.py` reconnaît les commandes historiques, `core/phrases.py` celles des capacités ajoutées ; `detect_action` les essaie dans un ordre fixe (le premier qui reconnaît la phrase l'emporte).
+**Phrases** : chaque agent a son fichier de phrases dans `core/intents/` (`mail.py`, `calendar.py`, `alarms.py`…) ; `core/intents/__init__.py` (`detect_action`) les essaie dans un ordre fixe (le premier qui reconnaît la phrase l'emporte). `common.py` rassemble ce qu'ils partagent : dates et heures dites, durées, récurrences, nombres en lettres (« à sept heures trente »), et `commands.py` les commandes slash. Les heures se calculent dans le fuseau de l'utilisateur (`GOOGLE_TIMEZONE`, via `config.local_now()`), pas dans celui du poste.
 
-**Contrôles avant livraison des créations** : l'agent code lance chaque script Python dans un bac à sable macOS (`sandbox-exec` : sans réseau, écriture limitée à un dossier temporaire qui sert de dossier personnel) ; l'agent design photographie son rendu avec Quick Look et le fait relire par le modèle, qui voit les images, puis corrige les défauts graves une fois.
+**Contrôles avant livraison des créations** : l'agent code lance chaque script Python dans un bac à sable macOS (`sandbox-exec` : sans réseau, écriture limitée à un dossier temporaire qui sert de dossier personnel), et les tests qu'il écrit y tournent avec le programme ; l'agent design photographie son rendu avec Quick Look et le fait relire par le modèle, qui voit les images, puis corrige les défauts graves une fois.
+
+**Modèle des créations** : `JARVIS_CREATION_MODEL` donne aux agents code, design et documents un modèle à part (plus gros, par exemple). Ollama le fait tourner en même temps que celui de la conversation : Jarvis ne fait plus attendre la conversation derrière une création. `./run_jarvis.sh tune` règle aussi Ollama pour deux demandes à la fois avec un seul modèle.
 
 ## Parcours d'une demande
 
@@ -67,7 +69,7 @@ Jarvis répond lui-même aux politesses, à l'aide, aux erreurs de commande et �
 HUD (voix ou clavier) ──► routes/chat.py ──► Jarvis.stream (core/jarvis.py)
                               │
                               ├─ 1. réponse à une confirmation en attente ? (« oui » / « non »)
-                              ├─ 2. intention reconnue ? (core/intents.py) ──► contrôleur ──► agent ──► Reply
+                              ├─ 2. intention reconnue ? (core/intents/) ──► contrôleur ──► agent ──► Reply
                               ├─ 3. demande d'aide ? (commandes / capacités)
                               └─ 4. sinon : savoir › conversation ──► services/llm.py ──► Ollama (phrases en flux)
                                      └─ recherche web si nécessaire ──► agent web ──► réponse rédigée
@@ -105,7 +107,9 @@ Le modèle de langage ne déclenche jamais d'action : il ne sert qu'à converser
 | `/api/dashboard` | GET | météo, agenda du jour, messages non lus, alarmes |
 | `/api/briefing` | GET | briefing prononcé par Jarvis (`kind=boot` ou `kind=full`) |
 | `/api/warmup` | POST | garde le modèle en mémoire (appelé par le HUD toutes les 10 minutes) |
-| `/api/events` | GET | événements proactifs (alarmes) depuis le dernier relevé |
+| `/api/events` | GET | événements proactifs (alarmes, créations prêtes, rappels de rendez-vous et routines : `notice`) depuis le dernier relevé |
+| `/api/creations` | GET | dernières créations de l'atelier, avec leur adresse |
+| `/api/creations/{chemin}` | GET | le fichier d'une création (page, logo, PDF, code en texte) ; rien en dehors du dossier des créations |
 | `/api/alarms` | GET | alarmes actives |
 | `/api/commands` | GET | aide des commandes |
 | `/api/google/connect` | POST | lance le flux OAuth Google |
@@ -199,12 +203,14 @@ Le test `tests/test_architecture.py` vérifie que chaque action reconnue a bien 
 | `Controller(agents)` | répartit les actions entre les agents de l'équipe (une action n'appartient qu'à un agent) |
 | `run(action, params)` | passe l'action à l'agent compétent et journalise « contrôleur › agent › action (durée) » |
 | `start()` | démarre les tâches de fond de ses agents |
-| `OrganisationController` | messagerie, agenda, alarmes |
-| `OrdinateurController` | poste, informations |
-| `SavoirController` | web, conversation (exposés en `.web` et `.conversation`) |
-| `CreationController` | code, design, atelier, qui partagent un `Workshop` |
+| `OrganisationController` | messagerie, agenda, alarmes, notes, trajets |
+| `OrdinateurController` | poste, informations, musique, fichiers |
+| `SavoirController` | web, conversation, mémoire, traduction, vision (web et conversation exposés en `.web` et `.conversation`) |
+| `CreationController` | code, design, documents, atelier, qui partagent un `Workshop` ; `occupied_with()` ne retient pas la conversation si les créations ont leur propre modèle |
+| `RoutinesController` | routines (l'agent, exposé en `.routines`, exécute ses étapes par `Jarvis.run_phrase`) |
+| `MaisonController` | maison |
 
-Ajouter un agent : créer `agents/mon_agent.py`, l'ajouter à l'équipe d'un contrôleur ou créer un nouveau contrôleur ajouté à la liste dans `main.py`, faire reconnaître ses phrases dans `core/intents.py`, et les ajouter à l'examen `tests/test_agent_exam.py`.
+Ajouter un agent : créer `agents/mon_agent.py`, l'ajouter à l'équipe d'un contrôleur ou créer un nouveau contrôleur ajouté à la liste dans `main.py`, faire reconnaître ses phrases dans `core/intents/mon_agent.py` (et l'ajouter aux parseurs de `core/intents/__init__.py`), et les ajouter à l'examen `tests/test_agent_exam.py`.
 
 ### `core/messages.py`
 - **Role**: format des requêtes et réponses (`HistoryMessage`, `ChatRequest`, `ChatResponse`).
@@ -218,6 +224,7 @@ Ajouter un agent : créer `agents/mon_agent.py`, l'ajouter à l'équipe d'un con
 | `voice.py` | `/api/tts`, `/api/stt` |
 | `hud.py` | `/api/status`, `/api/system`, `/api/dashboard`, `/api/briefing`, `/api/events`, `/api/alarms`, `/api/commands`, `/api/warmup`, et les fichiers du HUD (`HudFiles`, `Cache-Control: no-cache`) |
 | `google.py` | `/api/google/connect`, `/api/google/disconnect` |
+| `creations.py` | `/api/creations`, `/api/creations/{chemin}` (les créations, consultables depuis le téléphone ; `creation_url()` donne l'adresse d'une création) |
 | `security.py` | `RemoteAccessGuard` (code d'accès), `is_remote_request`, CORS limité à `localhost` (+ `JARVIS_ALLOWED_ORIGINS`), en-tête `Host` vérifié |
 
 ### `config.py`
@@ -228,6 +235,8 @@ Ajouter un agent : créer `agents/mon_agent.py`, l'ajouter à l'équipe d'un con
 |---|---|
 | `env_str`, `env_flag`, `env_int`, `env_float`, `env_list` | lecture typée et bornée d'une variable d'environnement |
 | `ACCESS_TOKEN` | code exigé des autres appareils (`JARVIS_ACCESS_TOKEN`) |
+| `local_now()` | l'heure chez l'utilisateur (`GOOGLE_TIMEZONE`), sans fuseau, comme les heures comprises dans les phrases |
+| `CREATION_MODEL`, `MAIL_TRIAGE`, `MEETING_REMINDER_MINUTES` | modèle des créations, tri des mails, marge avant un rendez-vous |
 | `load_contacts()` | carnet d'adresses `contacts.json` (nom → email) |
 
 Tous les modules lisent leur configuration ici : lire `os.getenv` à l'import d'un autre module ferait ignorer le `.env`.
@@ -248,40 +257,23 @@ Tous les modules lisent leur configuration ici : lire `os.getenv` à l'import d'
 | `smalltalk_reply(text)` | réponses immédiates aux petites phrases (« tu es là ? » → « Pour vous, Monsieur, toujours. ») |
 | `fold(text)`, `strip_accents(text)` | normalisation pour les détections |
 
-### `core/intents.py`
+### `core/intents/`
 - **Role**: détection des intentions et parsing des commandes slash ou phrases naturelles.
-- **Responsabilite**: transforme du texte libre en dictionnaires d'actions structurées.
+- **Responsabilite**: transforme du texte libre en dictionnaires d'actions structurées, sans le modèle de langage.
 
-| Fonction | Rôle |
+| Fichier | Rôle |
 |---|---|
-| `detect_action(text, fallback_email=None)` | entrée principale : essaie chaque parseur et renvoie une action, ou `None` (conversation) |
-| `classify_confirmation(text)` | interprète « oui » / « non » après une demande de confirmation |
-| `extract_recent_email_from_history(history)` | dernière adresse vue dans la conversation (« envoie-lui un mail ») |
-| `_parse_command(text)` | commandes slash (`/sendmail`, `/addevent`, `/status`, `/open`, `/volume`…) |
-| `_parse_natural_send_mail(text, fallback_email)` | envoi de mail : adresse, contact du carnet, objet, message ; demande une précision s'il manque un élément |
-| `_parse_natural_timer(text)` | minuteurs (« minuteur de 10 minutes », « annule le minuteur ») |
-| `_parse_natural_reminder(text)` | rappels (« rappelle-moi à 15h d'appeler Paul ») |
-| `_parse_natural_alarm(text)` | alarmes et réveils : création, liste, suppression |
-| `_parse_natural_calendar(text)` | calendrier : création, liste, disponibilités, suppression |
-| `_parse_mail_reading(text)` | lecture de la messagerie (résumé, dernier mail) |
-| `_parse_info(text)` | heure, date, météo, briefing |
-| `_parse_web_question(text)` | questions à chercher sur le web : « cherche … », horaires, prix, actualité, résultats, commerces de proximité (sauf ses propres données : « mes mails », « mon agenda ») |
-| `_parse_system(text)` | diagnostic, volume, veille, recherche à ouvrir dans le navigateur, ouverture/fermeture d'applications et de sites |
-
-Aides de parsing:
-
-| Fonction | Rôle |
-|---|---|
-| `_parse_datetime_expression(text)` | date/heure naturelle (« demain à 7h30 », « lundi prochain », « dans une demi-heure », « ce soir ») |
-| `_normalize_spoken_time(text)` | heures dictées → `7h30` (« 7 heures et demie », « midi », « 9 heures moins le quart ») |
-| `_extract_relative_delay(text)` | durée (« 10 minutes », « 1h30 », « un quart d'heure ») |
-| `_extract_day_period_bounds(text)` | plage de dates (jour, période, semaine) |
-| `_strip_time_expressions(text)` | retire les indications de temps pour isoler un titre |
-| `_extract_alarm_title`, `_event_title` | titre d'une alarme ou d'un événement (« Réunion avec Sophie ») |
-| `_extract_mail_subject`, `_extract_mail_body` | objet et corps d'un mail |
-| `_find_contact(text)` | retrouve un contact du carnet d'adresses `contacts.json` (nom → email) |
-| `_normalize_spoken_email(text)` | adresse dictée (« paul arobase exemple point com ») |
-| `_extract_city(text)` | ville d'une demande météo |
+| `__init__.py` | `detect_action(text, fallback_email=None)` : essaie chaque parseur dans l'ordre et renvoie une action, ou `None` (conversation) ; `classify_confirmation(text)` (« oui » / « non ») ; réexporte `COMMAND_HELP`, `extract_recent_email_from_history` |
+| `common.py` | `parse_datetime_expression` (« demain à 7h30 », « lundi prochain », « dans une demi-heure »), `normalize_spoken_time`, `spoken_numbers` (« sept heures trente » → « 7 heures 30 », seulement devant une unité), `extract_relative_delay`, `extract_day_period_bounds`, `extract_repeat` (« tous les soirs », « en semaine », « tous les mardis »), `first_occurrence`, `strip_time_expressions`, `clean_fragment` |
+| `commands.py` | `parse_command` : commandes slash (`/sendmail`, `/addevent`, `/status`, `/open`, `/volume`…) et `COMMAND_HELP` |
+| `mail.py` | envoi (adresse, contact du carnet, objet, message), lecture, réponse, recherche, archivage |
+| `calendar.py` | création (titre « Réunion : budget », récurrence), liste, disponibilités, suppression, déplacement |
+| `alarms.py` | minuteurs, rappels, alarmes et réveils, répétition |
+| `system.py` | diagnostic, volume, veille, applications et sites (`WEB_ONLY_SITES` : « ouvre YouTube »), écran, réseau, apparence |
+| `info.py` | heure, date, météo (jour, semaine, heure par heure), soleil, qualité de l'air, briefing |
+| `web.py` | questions à chercher sur le web (horaires, prix et comparaisons, actualité, résultats…), Wikipédia, résumé d'une page |
+| `creation.py` | code (et ses outils : tests, correction, explication), pages, logos, palettes, documents, propositions et choix, PDF, icônes, retouches |
+| `notes.py`, `travel.py`, `music.py`, `files.py`, `memory.py`, `translate.py`, `vision.py`, `home.py`, `routines.py` | les phrases de chacun de ces agents |
 
 Les demandes en langage naturel qui envoient un mail ou suppriment en masse portent `confirm: True` : l'agent présente l'action et attend un « oui ». Les commandes slash s'exécutent directement.
 
@@ -292,7 +284,7 @@ Les demandes en langage naturel qui envoient un mail ou suppriment en masse port
 | Fonction | Rôle |
 |---|---|
 | `load_system_prompt()` | charge `system_prompt.txt` et y inscrit la formule d'appel |
-| `ollama_status()` | vérifie qu'Ollama répond et que le modèle existe |
+| `ollama_status()` | vérifie qu'Ollama répond et que le modèle existe (gardé 30 s, 3 s s'il est hors ligne ; `forget_ollama_status()` l'oublie) |
 | `build_messages(history, message, context, system=None, limit=None)` | prompt système (ou `system`) + contexte en direct + historique récent (ou les `limit` derniers messages) |
 | `chat_stream(history, message, temperature, context, tools=None, system=None, history_limit=None)` | réponse phrase par phrase, pour parler sans attendre la fin ; se termine par un `ToolCall` si le modèle appelle un outil, y compris quand il l'écrit en toutes lettres (« recherche_web{…} ») au lieu de le déclarer |
 | `supports_tools()` | indique si le modèle sait appeler des outils (sinon, seul le routeur déclenche les recherches) |
@@ -543,7 +535,7 @@ Exceptions : `GoogleConfigError` (configuration), `GoogleApiError` (erreur à l'
 | `main.py` | tout (c'est lui qui assemble) |
 | `routes/` | `core/` (Jarvis), quelques fonctions de lecture des agents pour le HUD, `services/` |
 | `controllers/` | `core/controller.py` et les agents de leur équipe |
-| `core/jarvis.py` | `core/intents.py`, les contrats `core/controller.py` et `core/agent.py`, `services/llm.py` (état du modèle) |
+| `core/jarvis.py` | `core/intents/`, les contrats `core/controller.py` et `core/agent.py`, `services/llm.py` (état du modèle) |
 | `agents/` | `services/`, `persona.py`, `config.py`, et les fonctions d'un autre agent (le briefing lit les capteurs du poste) |
 | `services/` | `persona.py`, `config.py` — jamais un agent |
 | `config.py` | aucun (chargé en premier) |

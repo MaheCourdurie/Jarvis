@@ -120,12 +120,13 @@ Rien de tout cela n'est versionné (voir `.gitignore`).
 ## 7. Limites connues
 
 - **Pas d'interruption à la voix** : pendant qu'il parle, le micro est coupé pour qu'il ne s'entende pas. Pour le faire taire : `Échap` ou un clic sur le réacteur.
-- **Les actions passent par des formulations reconnues** (`Jarvis/API/core/intents.py`). Le modèle de langage ne déclenche rien lui-même : si une phrase n'est pas comprise, Jarvis demande de reformuler. Pour lui apprendre une tournure, ajoute-la au parseur concerné, avec un test dans `tests/test_intents.py`.
-- **Mails** : lecture des non lus et du dernier reçu, envoi. Pas de réponse, de transfert ni de suppression.
-- **Météo** : aujourd'hui et demain seulement.
+- **Les actions passent par des formulations reconnues** (`Jarvis/API/core/intents/`, un fichier de phrases par agent). Le modèle de langage ne déclenche rien lui-même, sauf le routage de secours, limité à des actions sans risque. Pour apprendre une tournure à Jarvis, ajoute-la au fichier de l'agent concerné, avec la phrase dans l'examen `tests/test_agent_exam.py`.
+- **Mails** : lecture, tri des non lus par le modèle, recherche, réponse, envoi, archivage, corbeille. Pas de transfert.
+- **Météo** : 7 jours, et heure par heure sur les prochaines 24 heures.
 - **Recherche web** : elle passe par DuckDuckGo, sans clé, et prend 4 à 6 secondes, dont 2,5 à 3,5 pour que le modèle lise les pages et commence sa réponse. Pour aller plus vite, il faudrait un modèle plus petit (moins juste). Certains sites ne se laissent pas lire (pages construites en JavaScript, blocages) : Jarvis dit alors ce qu'il a trouvé et ce qui manque. La réponse vaut ce que valent les pages consultées, d'où les sources affichées.
 - **Calcul** : c'est le modèle qui calcule, et il se trompe parfois sur une multiplication.
-- **Mémoire** : la conversation en cours, rien d'un lancement à l'autre.
+- **Mémoire** : ce que tu lui demandes de retenir (« souviens-toi que… ») est gardé d'un lancement à l'autre ; la conversation elle-même, non.
+- **Lancé à la demande**, Jarvis ne prévient d'un rendez-vous ou ne lance une routine programmée que s'il tourne : il reste allumé dans l'heure qui précède, mais s'il s'est arrêté avant, rien ne part.
 - **Pilotage du poste** : complet sur macOS ; Linux et Windows sont prévus dans le code mais jamais essayés.
 - **Reconnaissance du navigateur** (repli si Whisper n'est pas installé) : écrite mais jamais essayée.
 - **Téléphone** : l'écoute s'arrête quand l'écran se verrouille ou que Safari passe en arrière-plan. Si le HUD est ouvert à la fois sur le Mac et sur le téléphone, les deux annoncent les alarmes.
@@ -196,7 +197,6 @@ Testé en vrai : météo sur 7 jours, soleil, qualité de l'air, trajets depuis 
 - Logos encore simples : un modèle plus gros ferait mieux
 - « Réunion demain pour le budget » donne un événement « Le budget »
 - Noms de lieux OpenStreetMap parfois étranges (« Chantier métro ligne C – Puits Colomiers Gare »), et « la piscine » introuvable à Colomiers (elle porte sans doute un autre nom dans OpenStreetMap)
-- `Jarvis/API/Doc_Technique_Api.md` est une copie périmée : à supprimer
 
 ### Pour plus tard
 
@@ -206,4 +206,56 @@ Testé en vrai : météo sur 7 jours, soleil, qualité de l'air, trajets depuis 
 - Design : plusieurs propositions au choix, favicon ; documents en PDF ; voir ses créations depuis le téléphone
 - Routines à heure fixe, état des appareils de la maison
 - Relire `/incompris` chaque semaine et apprendre ces phrases à Jarvis (examen : `tests/test_agent_exam.py`)
+- Idées d'agents : budget, sport et santé
+
+## 11. Agents renforcés (15 octobre 2026, suite)
+
+Tout est commité sur `feat/jarvis-iron-man`. 610 tests passent, dont l'examen des agents (plus de 300 phrases).
+
+### Corrigé
+
+- [x] **Minuteurs refusés** (« heure déjà passée ») quand le fuseau du système différait de `GOOGLE_TIMEZONE` : les heures dites se calculent maintenant dans le fuseau de l'utilisateur
+- [x] « Réunion demain à 10h pour le budget » → **« Réunion : budget »** (avec la personne : « Réunion avec Paul : budget ») ; sans heure, Jarvis ne redemande que l'heure
+- [x] « Ouvre la page Wikipédia sur Napoléon », « ouvre Wikipédia à la page … », « ouvre Napoléon sur Wikipédia » ; « ouvre YouTube / Gmail » ouvre le site
+- [x] **Nombres en lettres** que Whisper écrit parfois : « à sept heures trente », « dans vingt-cinq minutes », « le son à cinquante »
+- [x] `core/intents.py` (1 673 lignes) et `core/phrases.py` **découpés** : `core/intents/`, un fichier de phrases par agent
+- [x] `Doc_Technique_Api.md` supprimé
+
+### Nouveau
+
+- [x] **Mails triés par le modèle** : « Paul attend une réponse ; le reste : une facture et une publicité » (`JARVIS_MAIL_TRIAGE`)
+- [x] **Météo heure par heure** : « ce soir », « cet après-midi », « à quelle heure va-t-il pleuvoir »
+- [x] **Prévenir avant un rendez-vous**, trajet depuis la maison compris (`JARVIS_MEETING_REMINDER_MINUTES`, 10 min de marge)
+- [x] **Agent code** : « écris les tests du script » (lancés en bac à sable), « corrige le fichier main.py » (l'original n'est jamais touché), « explique-moi ce script »
+- [x] **Design** : « propose-moi trois logos » puis « la deuxième » ; favicon et icônes d'app avec chaque logo
+- [x] **PDF** : « … en PDF », « exporte-le en PDF » (Chrome, Edge ou Brave)
+- [x] **Créations sur le téléphone** : bouton « Ouvrir ici » dans l'interface (`/api/creations`)
+- [x] **Routines à heure fixe** : « lance la routine bonne nuit tous les soirs à 22h »
+- [x] **Vision** : « décris la photo plage.jpg »
+- [x] **Comparer des prix** : « où acheter l'iPhone 16 le moins cher ? »
+- [x] **Vitesse** : `JARVIS_CREATION_MODEL` (un modèle à part pour les créations : la conversation n'attend plus), `./run_jarvis.sh tune` (Ollama à deux demandes à la fois), état d'Ollama gardé en cache
+
+### À faire de ton côté
+
+- [ ] `./run_jarvis.sh tune` une fois (puis après chaque redémarrage du Mac), ou essayer `JARVIS_CREATION_MODEL=gemma4:26b` dans `.env` si la mémoire du Mac le permet (`ollama pull gemma4:26b`)
+- [ ] `./run_jarvis.sh service restart` pour charger le nouveau code
+- [ ] Recharger l'interface sur le téléphone (le service worker passe en v3)
+
+### À tester en vrai
+
+- [ ] « Lis-moi mes mails » avec plusieurs non lus (après la configuration Google) : le tri est-il juste ?
+- [ ] Un rendez-vous avec un lieu dans l'agenda : l'annonce arrive-t-elle au bon moment ?
+- [ ] « Propose-moi trois logos pour … », puis « la deuxième » ; le dossier d'icônes (PNG faits par `sips`)
+- [ ] « Rédige une lettre … en PDF » (Chrome doit être installé)
+- [ ] Une création ouverte depuis le téléphone avec « Ouvrir ici »
+- [ ] « Écris les tests du script » après un script Python, et « corrige le fichier … » sur un vrai fichier
+- [ ] « Lance la routine bonne nuit tous les soirs à 22h » (Jarvis doit tourner à 22 h)
+- [ ] « Quel temps ce soir ? », « décris la photo … »
+
+### Pour plus tard
+
+- Trafic en direct et bus Tisséo (demande une clé d'API Tisséo)
+- État des appareils de la maison (HomeKit ne se lit pas par les Raccourcis sans les créer un par un)
+- Agent code dans un projet existant à plusieurs fichiers (git, diff à valider)
+- Fine-tuning du ton avec `train.py` sur de vraies conversations
 - Idées d'agents : budget, sport et santé

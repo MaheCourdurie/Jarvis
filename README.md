@@ -176,6 +176,7 @@ Informations:
 
 - `Quelle heure est-il ?` · `On est quel jour ?`
 - `Quel temps fait-il ?` · `Quel temps fait-il à Lyon demain ?` · `La météo du week-end` · `Il fera beau jeudi ?`
+- `Quel temps ce soir ?` · `Il va pleuvoir cet après-midi ?` · `À quelle heure va-t-il pleuvoir ?` · `Météo heure par heure`
 - `À quelle heure se couche le soleil ?` · `Quelle est la qualité de l'air ?`
 - `Fais-moi le point` (briefing : heure, météo, agenda, messagerie, alertes)
 - `Combien de temps pour aller à l'aéroport de Blagnac ?` · `… à vélo jusqu'à la gare` (OpenStreetMap, hors embouteillages ; départ : `JARVIS_HOME_ADDRESS` ou ta ville)
@@ -185,18 +186,18 @@ Recherche sur le web:
 - `Quels sont les horaires du Leclerc de Blagnac ?`
 - `Il y a une pharmacie de garde ce soir ?`
 - `Qui a gagné le dernier match du Stade Toulousain ?`
-- `Combien coûte un abonnement Netflix ?`
+- `Combien coûte un abonnement Netflix ?` · `Où acheter l'iPhone 16 le moins cher ?` (prix comparés site par site)
 - `Cherche les dernières nouvelles sur l'intelligence artificielle`
-- `Résume cette page https://…` · `Ouvre Wikipédia sur Napoléon`
+- `Résume cette page https://…` · `Ouvre la page Wikipédia sur Napoléon` · `Ouvre Napoléon sur Wikipédia`
 - `Comment on dit « je suis en retard » en anglais ?`
-- `Regarde mon écran` · `Qu'est-ce qu'il y a sur mon écran ?` (le modèle voit les images)
+- `Regarde mon écran` · `Qu'est-ce qu'il y a sur mon écran ?` · `Décris la photo plage.jpg` (le modèle voit les images)
 
 Jarvis prévient (« Un instant, Monsieur, je consulte le réseau. »), interroge le web, lit les premières pages et répond en quelques phrases, sources à l'appui (affichées en liens dans le HUD). Il décide seul de chercher quand la question porte sur une information récente ou locale ; pour le forcer, commence par « cherche … ». Si aucun lieu n'est précisé, il utilise ta ville (`JARVIS_CITY`).
 
 Poste de travail:
 
 - `Lance un diagnostic` · `Niveau de batterie ?`
-- `Ouvre Safari` · `Ferme la calculette` · `Ouvre github.com`
+- `Ouvre Safari` · `Ferme la calculette` · `Ouvre github.com` · `Ouvre YouTube` (les sites sans application s'ouvrent dans le navigateur)
 - `Monte le volume` · `Volume à 40` · `Coupe le son`
 - `Recherche Iron Man sur YouTube` · `Ouvre une recherche sur les réacteurs à arc` (dans le navigateur)
 - `Mets l'écran en veille` · `Verrouille le Mac` · `Fais une capture d'écran`
@@ -205,6 +206,7 @@ Poste de travail:
 - `Où est mon fichier budget 2026 ?` · `Résume le document rapport annuel` (texte, Word, PDF)
 - `Allume la lumière du salon` · `Lance le raccourci Bonne nuit` (maison connectée, à travers tes Raccourcis)
 - `Mode travail` · `Lance la routine bonne nuit` · `Crée une routine soirée : baisse le son, puis mets de la musique`
+- `Lance la routine bonne nuit tous les soirs à 22h` · `Le mode travail en semaine à 9h` · `Ne lance plus la routine bonne nuit automatiquement` (Jarvis doit tourner à l'heure dite ; lancé à la demande, il reste allumé dans l'heure qui précède)
 
 Alarmes, minuteurs, rappels:
 
@@ -212,21 +214,22 @@ Alarmes, minuteurs, rappels:
 - `Minuteur de 10 minutes pour les pâtes` · `Annule le minuteur`
 - `Rappelle-moi à 15h d'appeler Paul`
 - `Quelles sont mes alarmes ?` · `Supprime toutes mes alarmes`
-- `Réveille-moi tous les jours de semaine à 6h45` · `Encore 5 minutes` (quand ça sonne) · `Il reste combien sur le minuteur ?`
+- `Réveille-moi tous les jours de semaine à 6h45` · `Réveille-moi tous les matins à sept heures` · `Encore 5 minutes` (quand ça sonne) · `Il reste combien sur le minuteur ?`
 - `Prends une note : appeler le plombier lundi` · `Ajoute du lait à ma liste de courses` (apps Notes et Rappels, synchronisées sur l'iPhone)
 
 Calendrier:
 
 - `Qu'est-ce que j'ai de prévu demain ?` · `Quels sont mes événements de mardi ?`
-- `Planifie une réunion avec Sophie demain à 10h`
+- `Planifie une réunion avec Sophie demain à 10h` · `Ajoute une réunion demain à 10h pour le budget` (titre « Réunion : budget »)
 - `Crée un événement lundi de 14h à 16h pour réunion client`
 - `Suis-je libre cette semaine ?`
 - `Supprime les événements de vendredi`
 - `Décale le dentiste à 16h` · `Ajoute une réunion d'équipe tous les lundis à 9h`
+- avant chaque rendez-vous, Jarvis prévient au moment de partir, trajet depuis la maison compris (« Le dentiste est à 15 h. Comptez 22 minutes de trajet : il serait temps de partir. ») ; sans lieu ou en visio, quelques minutes avant. Réglage : `JARVIS_MEETING_REMINDER_MINUTES` (marge, 10 par défaut ; 0 pour ne jamais prévenir)
 
 Mail:
 
-- `Résume mes mails` · `Lis mon dernier mail`
+- `Résume mes mails` · `Lis mon dernier mail` (le modèle trie les non lus : ce qui demande votre attention d'abord, puis le reste par type ; `JARVIS_MAIL_TRIAGE=0` pour la liste seule)
 - `Envoie un mail à client@exemple.com pour lui dire que le devis est prêt`
 - `Envoie un mail à Paul pour lui dire que je serai en retard` (avec un carnet d'adresses, voir plus bas)
 - `Réponds à Paul que c'est d'accord` · `Lis-moi le mail de la banque` · `Cherche les mails de Sophie`
@@ -240,9 +243,14 @@ Mémoire:
 Création (en tâche de fond, Jarvis prévient quand c'est prêt):
 
 - `Crée-moi un script Python qui range mes téléchargements` (essayé dans un bac à sable avant d'être livré)
+- `Écris les tests du script` (tests unittest, lancés dans le bac à sable avec le programme avant d'être livrés)
+- `Corrige le fichier convertisseur.py` (la version corrigée est enregistrée dans l'atelier, l'original n'est jamais touché) · `Explique-moi le fichier main.py`
 - `Fais-moi un site pour une boulangerie à Colomiers` · `Dessine-moi un logo…` · `Propose-moi une palette…` (relus visuellement)
-- `Rédige une lettre de résiliation pour ma salle de sport` · `Fais-moi un CV` (livré en .docx)
+- `Propose-moi trois logos pour mon club` (ou des palettes) : les propositions côte à côte, puis `La deuxième` pour garder celle-là
+- chaque logo est livré avec son favicon et ses icônes d'app (32, 180, 192, 512 px, manifeste) ; `Fais-en des icônes` pour un logo plus ancien
+- `Rédige une lettre de résiliation pour ma salle de sport` · `Fais-moi un CV` (livré en .docx) · `… en PDF` · `Exporte-le en PDF` (avec Chrome, Edge ou Brave)
 - `Ajoute un formulaire de contact à la page` · `Reviens à la version précédente` · `Montre-moi mes créations`
+- depuis le téléphone, une création terminée s'ouvre d'un geste (bouton « Ouvrir ici » dans l'interface)
 
 Quand une phrase qui ressemble à un ordre n'est pas reconnue, le modèle choisit l'agent (parmi des actions sans risque) et la phrase est notée : `/incompris` les liste, pour les apprendre à Jarvis.
 
@@ -312,6 +320,7 @@ chmod +x run_jarvis.sh
 - `phone`: rend Jarvis accessible depuis le téléphone (Tailscale, HTTPS, code d'accès, QR code)
 - `service install|start|stop|restart|remove|status`: installe Jarvis comme service macOS à la demande (lancé à la première connexion, arrêté après `JARVIS_IDLE_MINUTES` sans demande ; projet hors du Bureau, des Documents et des Téléchargements)
 - `telegram [setup]|status|remove`: bot Telegram qui lance et arrête Jarvis à distance (token de BotFather, appairage par QR code)
+- `tune`: règle Ollama pour Jarvis (macOS) : deux demandes à la fois (`OLLAMA_NUM_PARALLEL=2`, la conversation n'attend plus derrière une création) et modèle gardé une heure en mémoire ; à relancer après un redémarrage du Mac
 - `test`: envoie un prompt de test à Ollama
 - `pytest`: lance les tests automatiques
 - `train`: lance `Jarvis/train.py`
@@ -343,9 +352,14 @@ Tout est optionnel. Copie `.env.example` en `.env` à la racine et adapte.
 | `OLLAMA_URL` | `http://localhost:11434` | adresse d'Ollama |
 | `OLLAMA_MODEL` | `jarvis` | modèle utilisé pour la conversation |
 | `JARVIS_BASE_MODEL` | `gemma4:e4b` | modèle de base utilisé par `create` sans GGUF fine-tuné |
+| `JARVIS_CREATION_MODEL` | *(vide)* | modèle des créations (code, pages, logos, documents), par exemple un plus gros (`gemma4:26b`) ; il tourne en même temps que la conversation, qui n'attend plus. Vide = celui de la conversation |
 | `JARVIS_STRICT_ACTIONS_ONLY` | `0` | `1` : Jarvis refuse tout ce qui n'est pas une action (ancien comportement) |
 | `JARVIS_CONFIRM_ACTIONS` | `1` | confirmation avant envoi de mail et suppressions en masse |
 | `JARVIS_WEB_SEARCH` | `1` | `0` : Jarvis ne cherche plus lui-même sur le web, il ouvre la recherche dans le navigateur |
+| `JARVIS_MAIL_TRIAGE` | `1` | le modèle trie les mails non lus (ce qui demande votre attention, puis le reste par type) ; `0` = la liste seule |
+| `JARVIS_MEETING_REMINDER_MINUTES` | `10` | marge avant le départ pour un rendez-vous (trajet compris) ; `0` = jamais prévenir |
+| `JARVIS_CHROME` | *(auto)* | navigateur utilisé pour l'export PDF (Chrome, Edge, Brave ou Chromium sont trouvés seuls) |
+| `GOOGLE_TIMEZONE` | `Europe/Paris` | fuseau de l'agenda, et celui des heures dites (« à 7h », « dans 10 minutes »), même si le poste est réglé autrement |
 | `JARVIS_TTS_ENGINE` | `auto` | synthèse : `auto`, `piper`, `say` (macOS), `browser`, `off` |
 | `JARVIS_PIPER_VOICE` | `fr_FR-tom-medium` | voix Piper |
 | `JARVIS_TTS_VOICE` | *(auto)* | voix macOS pour le moteur `say` |
@@ -535,11 +549,11 @@ Jarvis dirige des **contrôleurs**, des chefs d'équipe qui répartissent le tra
 HUD / téléphone / Discord
         │  HTTP
         ▼
-routes/   chat · voice · hud · google · security        (la porte d'entrée)
+routes/   chat · voice · hud · google · creations · security   (la porte d'entrée)
         │
         ▼
 JARVIS  core/jarvis.py                                  (le chef)
-        │  1. comprend la phrase (core/intents.py)
+        │  1. comprend la phrase (core/intents/, un fichier de phrases par agent)
         │  2. choisit le contrôleur du domaine
         │  3. applique les règles communes : confirmation, accès distant, liaison Google
         ▼
@@ -559,11 +573,11 @@ services/   Google · Ollama · voix · météo · recherche web · stockage des
 ```
 
 - `Jarvis/API/main.py` : point d'entrée, assemble services, contrôleurs, Jarvis et routes
-- `Jarvis/API/core/` : `jarvis.py` (le chef), `controller.py` et `agent.py` (le contrat commun des contrôleurs et des agents), `intents.py` et `phrases.py` (compréhension des commandes et des phrases), `fallback.py` (routage de secours par le modèle et journal des incompris), `messages.py` (format des requêtes)
+- `Jarvis/API/core/` : `jarvis.py` (le chef), `controller.py` et `agent.py` (le contrat commun des contrôleurs et des agents), `intents/` (compréhension des phrases : `__init__.py` les aiguille, un fichier par agent — `mail.py`, `calendar.py`, `alarms.py`… —, `common.py` pour les dates, heures, durées et nombres dits, `commands.py` pour les commandes slash), `fallback.py` (routage de secours par le modèle et journal des incompris), `messages.py` (format des requêtes)
 - `Jarvis/API/controllers/` : `organisation.py`, `ordinateur.py`, `savoir.py`, `creation.py`, `routines.py`, `maison.py` — chacun liste les agents de son équipe
-- `Jarvis/API/agents/` : `mail.py`, `calendar.py`, `alarms.py`, `system.py`, `info.py`, `web.py`, `conversation.py` (modèle local, qui appelle l'agent web s'il lui manque une information), `memory.py`, `translate.py`, `vision.py`, `notes.py`, `travel.py`, `music.py`, `files.py`, `code.py`, `design.py`, `document.py`, `atelier.py` (ce que partagent les agents créatifs), `routines.py`, `home.py` ; `briefing.py` fournit le tableau de bord et le contexte en direct
-- `Jarvis/API/routes/` : les routes HTTP — `chat.py` (`/api/chat`, `/api/chat/stream`), `voice.py` (`/api/tts`, `/api/stt`), `hud.py` (état, tableau de bord, briefing, alarmes, fichiers du HUD), `google.py` (liaison Google), `security.py` (code d'accès, origines, noms d'hôte)
-- `Jarvis/API/services/` : les outils techniques — `google_client.py`, `llm.py`, `voice.py`, `weather.py`, `web_search.py`, `alarm_store.py`, `events.py`, `on_demand.py`
+- `Jarvis/API/agents/` : `mail.py`, `calendar.py`, `alarms.py`, `system.py`, `info.py`, `web.py`, `conversation.py` (modèle local, qui appelle l'agent web s'il lui manque une information), `memory.py`, `translate.py`, `vision.py`, `notes.py`, `travel.py`, `music.py`, `files.py`, `code.py`, `design.py`, `document.py`, `atelier.py` (ce que partagent les agents créatifs), `routines.py`, `home.py` ; `briefing.py` fournit le tableau de bord et le contexte en direct ; `heads_up.py` prévient avant les rendez-vous
+- `Jarvis/API/routes/` : les routes HTTP — `chat.py` (`/api/chat`, `/api/chat/stream`), `voice.py` (`/api/tts`, `/api/stt`), `hud.py` (état, tableau de bord, briefing, alarmes, fichiers du HUD), `google.py` (liaison Google), `creations.py` (`/api/creations` : les créations, ouvertes depuis le téléphone), `security.py` (code d'accès, origines, noms d'hôte)
+- `Jarvis/API/services/` : les outils techniques — `google_client.py`, `llm.py`, `voice.py`, `weather.py`, `web_search.py`, `alarm_store.py`, `events.py`, `on_demand.py`, `pdf.py` (export PDF par un navigateur sans fenêtre)
 - `Jarvis/API/config.py` et `persona.py` : réglages et ton de Jarvis, partagés par tous
 
 Chaque agent déclare ses actions et ses règles (Google requis, confirmation, interdit à distance) ; une action ne peut appartenir qu'à un seul agent et un seul contrôleur. `GET /api/status` liste les contrôleurs, leurs agents et leurs actions, et le journal montre le chemin de chaque demande avec son temps de réponse :
@@ -577,10 +591,10 @@ Chaque agent déclare ses actions et ses règles (Google requis, confirmation, i
 
 1. créer `agents/mon_agent.py` avec une classe qui hérite d'`Agent` et déclare ses actions dans `handlers()`
 2. l'ajouter à l'équipe d'un contrôleur (`controllers/*.py`), ou créer un nouveau contrôleur et l'ajouter à la liste dans `main.py`
-3. faire reconnaître ses phrases dans `core/intents.py`
+3. faire reconnaître ses phrases dans `core/intents/mon_agent.py`, et l'ajouter à la liste des parseurs de `core/intents/__init__.py`
 4. ajouter ses phrases à l'examen des agents (`tests/test_agent_exam.py`)
 
-**L'examen des agents** (`tests/test_agent_exam.py`) : une centaine de phrases de tous les jours, avec l'action que chaque agent doit en tirer, plus celles qui doivent rester à la conversation. C'est l'entraînement des agents : une tournure mal comprise y est ajoutée, puis apprise dans `core/intents.py`, et ne peut plus être oubliée.
+**L'examen des agents** (`tests/test_agent_exam.py`) : plus de 300 phrases de tous les jours — dont une centaine telles que Whisper les transcrit (minuscules, sans ponctuation, nombres en lettres) —, avec l'action que chaque agent doit en tirer, plus celles qui doivent rester à la conversation. C'est l'entraînement des agents : une tournure mal comprise y est ajoutée, puis apprise dans le fichier de phrases de l'agent (`core/intents/<agent>.py`), et ne peut plus être oubliée.
 
 **Les agents code et design** travaillent en tâche de fond (le modèle local écrit environ 20 mots par seconde : une à trois minutes par création). Jarvis répond tout de suite, puis annonce le résultat dans le HUD — ou à voix haute sur le Mac si le HUD est fermé. Chaque création passe un contrôle qualité avant d'être livrée (syntaxe du code, page HTML complète, SVG valide, contrastes de la palette) ; si elle échoue, le modèle reçoit l'erreur et corrige une fois. Les créations sont rangées dans `~/Documents/Jarvis` (`JARVIS_CREATIONS_DIR`) et ouvertes sur le poste : le code dans Visual Studio Code, le reste dans le navigateur.
 
@@ -591,6 +605,9 @@ Chaque agent déclare ses actions et ses règles (Google requis, confirmation, i
 | « Fais-moi un site pour une boulangerie à Colomiers » | design (page web) |
 | « Dessine-moi un logo pour mon club de tennis » | design (SVG + aperçu clair, sombre, en petit) |
 | « Propose-moi une palette de couleurs pour une appli de méditation » | design (nuancier avec contrastes vérifiés) |
+| « Propose-moi trois logos pour mon club », puis « la deuxième » | design (propositions côte à côte), puis atelier |
+| « Écris les tests du script », « corrige le fichier main.py », « explique-moi ce script » | code |
+| « Rédige une lettre de résiliation en PDF », « exporte-le en PDF » | documents, atelier |
 | « Ajoute un formulaire de contact à la page », « corrige-le » | atelier → l'agent qui l'a faite (nouvelle version, l'ancienne est gardée) |
 | « Montre-moi mes créations », « ouvre ma dernière création » | atelier |
 
@@ -602,7 +619,7 @@ Le détail de chaque fichier est dans [Jarvis/API/README.md](Jarvis/API/README.m
 ./run_jarvis.sh pytest
 ```
 
-Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (commandes système simulées), la voix, la recherche web (faux moteur), l'app installable, le bot Telegram (faux Telegram) et l'API de bout en bout avec un faux compte Google. Ils ne touchent ni à ta messagerie, ni à ton agenda, ni à ton ordinateur, ni au réseau.
+Les tests couvrent l'examen des agents, le routeur d'intentions, la persona, le pilotage du poste (commandes système simulées), la voix, la recherche web (faux moteur), l'app installable, le bot Telegram (faux Telegram) et l'API de bout en bout avec un faux compte Google. Ils ne touchent ni à ta messagerie, ni à ton agenda, ni à ton ordinateur, ni au réseau.
 
 ## Arborescence du projet
 
@@ -642,30 +659,34 @@ Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (co
     │   │   ├── jarvis.py
     │   │   ├── controller.py
     │   │   ├── agent.py
-    │   │   ├── intents.py
+    │   │   ├── fallback.py         # routage de secours et journal des incompris
+    │   │   ├── intents/            # compréhension des phrases, un fichier par agent
+    │   │   │   ├── __init__.py     # detect_action : l'ordre des parseurs
+    │   │   │   ├── common.py       # dates, heures, durées, récurrences, nombres dits
+    │   │   │   ├── commands.py     # commandes slash
+    │   │   │   └── mail.py, calendar.py, alarms.py, … creation.py
     │   │   └── messages.py
     │   ├── controllers/            # les chefs d'équipe
     │   │   ├── organisation.py
     │   │   ├── ordinateur.py
     │   │   ├── savoir.py
-    │   │   └── creation.py
+    │   │   ├── creation.py
+    │   │   ├── routines.py
+    │   │   └── maison.py
     │   ├── agents/                 # les spécialistes
-    │   │   ├── mail.py
-    │   │   ├── calendar.py
-    │   │   ├── alarms.py
-    │   │   ├── system.py
-    │   │   ├── info.py
-    │   │   ├── web.py
-    │   │   ├── conversation.py
-    │   │   ├── code.py
-    │   │   ├── design.py
-    │   │   ├── atelier.py
+    │   │   ├── mail.py, calendar.py, alarms.py, notes.py, travel.py
+    │   │   ├── system.py, info.py, music.py, files.py
+    │   │   ├── web.py, conversation.py, memory.py, translate.py, vision.py
+    │   │   ├── code.py, design.py, document.py, atelier.py
+    │   │   ├── routines.py, home.py
+    │   │   ├── heads_up.py         # prévenir avant un rendez-vous
     │   │   └── briefing.py
     │   ├── routes/                 # routes HTTP
     │   │   ├── chat.py
     │   │   ├── voice.py
     │   │   ├── hud.py
     │   │   ├── google.py
+    │   │   ├── creations.py        # les créations, ouvertes depuis le téléphone
     │   │   └── security.py
     │   ├── services/               # outils techniques
     │   │   ├── google_client.py
@@ -675,7 +696,8 @@ Les tests couvrent le routeur d'intentions, la persona, le pilotage du poste (co
     │   │   ├── web_search.py
     │   │   ├── alarm_store.py
     │   │   ├── events.py
-    │   │   └── on_demand.py
+    │   │   ├── on_demand.py
+    │   │   └── pdf.py
     │   ├── phone_setup.py
     │   ├── google_auth_setup.py
     │   ├── contacts.example.json
