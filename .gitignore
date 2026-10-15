@@ -9,6 +9,9 @@ Jarvis/API/client_secret*.json
 Jarvis/API/.alarms.json
 Jarvis/API/voices/
 Jarvis/API/contacts.json
+Jarvis/API/.memory.json
+Jarvis/API/.incompris.jsonl
+Jarvis/API/routines.json
 
 # Environnement Python
 .venv/

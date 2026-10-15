@@ -259,6 +259,17 @@ def _keywords(query: str) -> list[str]:
     return list(dict.fromkeys(words))
 
 
+def page_text(page: str, budget: int = 6000) -> str:
+    """Le texte lisible d'une page (sans menus ni scripts), tronqué à « budget » caractères."""
+    parser = _TextExtractor()
+    try:
+        parser.feed(page)
+    except Exception:
+        return ""
+    text = "\n".join(line for line in parser.text_lines() if len(line) >= 25)
+    return text[:budget]
+
+
 def extract_passages(page: str, query: str, budget: Optional[int] = None) -> str:
     """Retient, dans une page, les lignes en rapport avec la question (et leur voisinage)."""
     budget = budget or EXTRACT_CHARS

@@ -44,6 +44,15 @@ os.environ.update(
         "JARVIS_ALLOWED_ORIGINS": "",
         "ALARM_NOTIFICATION_ENABLED": "0",
         "ALARM_SOUND_ENABLED": "0",
+        # Les créations des agents code et design restent dans le dossier temporaire.
+        "JARVIS_CREATIONS_DIR": str(_TMP / "creations"),
+        # Mémoire, journal des incompris et routines : jamais les fichiers réels.
+        "JARVIS_MEMORY_FILE": str(_TMP / "memory.json"),
+        "JARVIS_MISSES_FILE": str(_TMP / "incompris.jsonl"),
+        "JARVIS_ROUTINES_FILE": str(_TMP / "routines.json"),
+        # La relecture visuelle demande Quick Look et le modèle : testée à part.
+        "JARVIS_DESIGN_SELF_REVIEW": "0",
+        "JARVIS_HOME_ADDRESS": "",
     }
 )
 

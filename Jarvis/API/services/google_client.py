@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from config import API_DIR
+
 
 class GoogleConfigError(Exception):
     pass
@@ -24,6 +26,9 @@ class GoogleClient:
     SCOPES = [
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
+        # Archiver et mettre à la corbeille. Un token créé avant cet ajout reste valable
+        # pour le reste : seules ces deux actions demandent de reconnecter le compte.
+        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/calendar.events",
     ]
@@ -45,7 +50,7 @@ class GoogleClient:
     @classmethod
     def from_env(cls) -> "GoogleClient":
         """Construit le client à partir des variables d'environnement."""
-        default_token = str(Path(__file__).resolve().parent / ".google-token.json")
+        default_token = str(API_DIR / ".google-token.json")
         timezone_name = os.getenv("GOOGLE_TIMEZONE", "Europe/Paris")
         return cls(
             client_secret_file=os.getenv("GOOGLE_CLIENT_SECRET_FILE", "").strip(),
@@ -185,7 +190,7 @@ class GoogleClient:
             raise GoogleConfigError("Dépendances Google manquantes dans requirements.txt") from exc
 
         try:
-            creds = Credentials.from_authorized_user_file(str(self.token_path), self.SCOPES)
+            creds = Credentials.from_authorized_user_file(str(self.token_path))
         except Exception as exc:
             raise GoogleConfigError(f"Token Google invalide ({self.token_path}): {exc}") from exc
 
@@ -244,11 +249,16 @@ class GoogleClient:
         preview = (message.get("snippet") or "").strip()
         received = header_map.get("date", "")
 
+        address = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", header_map.get("from", ""))
         return {
-            "from": {"emailAddress": {"name": sender_name}},
+            "id": message.get("id", ""),
+            "threadId": message.get("threadId", ""),
+            "from": {"emailAddress": {"name": sender_name, "address": address.group(0) if address else ""}},
             "subject": subject,
             "receivedDateTime": received,
             "bodyPreview": preview,
+            "messageIdHeader": header_map.get("message-id", ""),
+            "references": header_map.get("references", ""),
         }
 
     def get_unread_emails(self, limit: int = 5) -> list[dict]:
@@ -305,6 +315,106 @@ class GoogleClient:
             raise GoogleApiError(str(exc)) from exc
 
         return self._gmail_message_to_common(msg)
+
+    def has_scope(self, scope: str) -> bool:
+        """Vrai si le token actuel accorde cette autorisation (ex. gmail.modify)."""
+        try:
+            granted = json.loads(self.token_path.read_text(encoding="utf-8")).get("scopes") or []
+        except Exception:
+            return False
+        return any(item.endswith(scope) for item in granted)
+
+    def _require_modify(self) -> None:
+        if not self.has_scope("gmail.modify"):
+            raise GoogleApiError(
+                "autorisation manquante : reconnectez votre compte Google depuis le panneau « Liaisons » "
+                "pour me permettre d'archiver ou de supprimer des messages"
+            )
+
+    def search_emails(self, query: str, limit: int = 5) -> list[dict]:
+        """Cherche dans la messagerie avec la syntaxe Gmail (« from:paul », « facture »)."""
+        service = self._gmail_service()
+        try:
+            listing = service.users().messages().list(userId="me", q=query, maxResults=limit).execute()
+            return [
+                self._gmail_message_to_common(
+                    service.users().messages().get(
+                        userId="me",
+                        id=item["id"],
+                        format="metadata",
+                        metadataHeaders=["From", "Subject", "Date", "Message-ID", "References"],
+                    ).execute()
+                )
+                for item in listing.get("messages", []) or []
+            ]
+        except Exception as exc:
+            raise GoogleApiError(str(exc)) from exc
+
+    @staticmethod
+    def _plain_text(payload: dict) -> str:
+        """Texte d'un message : la partie text/plain, sinon le HTML débarrassé de ses balises."""
+        parts = [payload]
+        html_text = ""
+        while parts:
+            part = parts.pop(0)
+            parts.extend(part.get("parts") or [])
+            data = (part.get("body") or {}).get("data")
+            if not data:
+                continue
+            text = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)).decode("utf-8", "replace")
+            if part.get("mimeType") == "text/plain":
+                return text.strip()
+            if part.get("mimeType") == "text/html" and not html_text:
+                html_text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.S | re.I)
+                html_text = re.sub(r"<[^>]+>", " ", html_text)
+        return re.sub(r"[ \t]+", " ", html_text).strip()
+
+    def get_email(self, message_id: str) -> dict:
+        """Un message complet : en-têtes et texte."""
+        service = self._gmail_service()
+        try:
+            message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+        except Exception as exc:
+            raise GoogleApiError(str(exc)) from exc
+        item = self._gmail_message_to_common(message)
+        item["body"] = self._plain_text(message.get("payload") or {})
+        return item
+
+    def reply_to(self, message: dict, body: str) -> None:
+        """Répond dans le fil d'un message (même conversation, objet « Re: »)."""
+        service = self._gmail_service()
+        subject = message.get("subject") or ""
+        reply = MIMEText(body or "")
+        reply["to"] = message["from"]["emailAddress"].get("address") or ""
+        reply["subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+        if message.get("messageIdHeader"):
+            reply["In-Reply-To"] = message["messageIdHeader"]
+            reply["References"] = f"{message.get('references', '')} {message['messageIdHeader']}".strip()
+        raw = base64.urlsafe_b64encode(reply.as_bytes()).decode("utf-8")
+        try:
+            service.users().messages().send(
+                userId="me", body={"raw": raw, "threadId": message.get("threadId") or None}
+            ).execute()
+        except Exception as exc:
+            raise GoogleApiError(str(exc)) from exc
+
+    def archive_email(self, message_id: str) -> None:
+        """Retire le message de la boîte de réception (il reste dans « Tous les messages »)."""
+        self._require_modify()
+        try:
+            self._gmail_service().users().messages().modify(
+                userId="me", id=message_id, body={"removeLabelIds": ["INBOX"]}
+            ).execute()
+        except Exception as exc:
+            raise GoogleApiError(str(exc)) from exc
+
+    def trash_email(self, message_id: str) -> None:
+        """Met le message à la corbeille (récupérable pendant 30 jours)."""
+        self._require_modify()
+        try:
+            self._gmail_service().users().messages().trash(userId="me", id=message_id).execute()
+        except Exception as exc:
+            raise GoogleApiError(str(exc)) from exc
 
     def send_mail(self, to_email: str, subject: str, body: str) -> None:
         """Envoie un email via Gmail API."""
@@ -427,8 +537,8 @@ class GoogleClient:
 
         return deleted
 
-    def create_event(self, subject: str, start: datetime, end: datetime) -> dict:
-        """Crée un événement Google Calendar avec sujet et créneau."""
+    def create_event(self, subject: str, start: datetime, end: datetime, recurrence: str | None = None) -> dict:
+        """Crée un événement Google Calendar avec sujet et créneau (récurrent avec une règle RRULE)."""
         service = self._calendar_service()
 
         if start.tzinfo is None:
@@ -448,6 +558,9 @@ class GoogleClient:
             },
         }
 
+        if recurrence:
+            payload["recurrence"] = [f"RRULE:{recurrence}"]
+
         try:
             created = service.events().insert(calendarId=self.calendar_id, body=payload).execute()
         except Exception as exc:
@@ -457,6 +570,22 @@ class GoogleClient:
             "webLink": created.get("htmlLink"),
             **created,
         }
+
+    def move_event(self, event_id: str, start: datetime, end: datetime) -> dict:
+        """Déplace un événement (nouvelle heure de début et de fin)."""
+        service = self._calendar_service()
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=self.timezone)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=self.timezone)
+        body = {
+            "start": {"dateTime": start.astimezone(self.timezone).isoformat(), "timeZone": self.timezone_name},
+            "end": {"dateTime": end.astimezone(self.timezone).isoformat(), "timeZone": self.timezone_name},
+        }
+        try:
+            return service.events().patch(calendarId=self.calendar_id, eventId=event_id, body=body).execute()
+        except Exception as exc:
+            raise GoogleApiError(str(exc)) from exc
 
     def delete_event(self, event_id: str) -> bool:
         """Supprime un événement Calendar par son identifiant."""

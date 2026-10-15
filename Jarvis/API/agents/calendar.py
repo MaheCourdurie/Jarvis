@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from core.agent import Agent, Handler
 from persona import (
     Reply,
     TITLE,
     day_label,
+    fold,
     format_date,
     format_time,
     format_when,
@@ -162,11 +164,19 @@ def handle_add_event(mail_client: Any, params: dict) -> Reply:
     except Exception as exc:
         print(f"[CALENDAR] Vérification des conflits impossible: {exc}", flush=True)
 
-    created = mail_client.create_event(title, start, end)
+    recurrence = params.get("recurrence")
+    if recurrence:
+        created = mail_client.create_event(title, start, end, recurrence=recurrence)
+    else:
+        created = mail_client.create_event(title, start, end)
     web_link = created.get("webLink") or created.get("htmlLink")
 
     text = f"C'est noté, {TITLE} : « {title} », {format_when(start, now)} → {format_time(end)}."
     speech = f"C'est noté, {TITLE}. {title}, {spoken_when(start, now)}."
+    if recurrence:
+        rhythm = params.get("rhythm") or "de façon récurrente"
+        text = f"C'est noté, {TITLE} : « {title} » {rhythm}, de {format_time(start)} à {format_time(end)}. Premier : {format_when(start, now)}."
+        speech = f"C'est noté, {TITLE}. {title}, {rhythm} à {spoken_when(start, now).split(' à ')[-1]}."
     if conflicts:
         other = conflicts[0]
         text += (
@@ -177,6 +187,36 @@ def handle_add_event(mail_client: Any, params: dict) -> Reply:
     if web_link:
         text += f"\nLien calendrier : {web_link}"
     return Reply(text=text, speech=speech, data={"conflicts": len(conflicts)})
+
+
+def _matches(event: dict, query: str) -> bool:
+    words = [word for word in fold(query).split() if len(word) > 2]
+    subject = fold(event.get("subject") or "")
+    return bool(words) and all(word in subject for word in words)
+
+
+def handle_move_event(mail_client: Any, params: dict) -> Reply:
+    """Déplace un événement trouvé par son titre (« décale le dentiste à 16h »)."""
+    timezone = mail_client.timezone
+    now = datetime.now(timezone)
+    query = str(params.get("query") or "").strip()
+    search_start = _localize(datetime.fromisoformat(params["from"]), timezone) if params.get("from") else now
+    search_end = _localize(datetime.fromisoformat(params["to"]), timezone) if params.get("to") else now + timedelta(days=60)
+    candidates = [event for event in mail_client.list_events_in_range(search_start, search_end) if not event.get("isAllDay")]
+    found = [event for event in candidates if _matches(event, query)]
+    if not found:
+        return Reply(text=f"Je ne trouve pas « {query} » dans votre agenda, {TITLE}.")
+    event = found[0]
+    start, end = event["start"], event["end"]
+    target = _localize(datetime.fromisoformat(params["target"]), timezone)
+    if params.get("time_only"):
+        target = start.replace(hour=target.hour, minute=target.minute)
+    new_end = target + (end - start)
+    mail_client.move_event(event["id"], target, new_end)
+    return Reply(
+        text=f"C'est fait, {TITLE} : « {event['subject']} » passe {format_when(target, now)} → {format_time(new_end)}.",
+        speech=f"C'est fait, {TITLE}. {event['subject']} est déplacé {spoken_when(target, now)}.",
+    )
 
 
 def handle_delete_event(mail_client: Any, params: dict) -> Reply:
@@ -256,3 +296,24 @@ def handle_events_range(mail_client: Any, params: dict) -> Reply:
     else:
         speech += f" Le premier : {_spoken_event(events[0], now)}."
     return Reply(text="\n".join(lines) + DELETE_HINT, speech=speech, data={"events": len(events)})
+
+
+class CalendarAgent(Agent):
+    """Agenda Google : consultation, disponibilités, ajout et suppression d'événements."""
+
+    name = "agenda"
+    needs_google = True
+    writes = frozenset({"add_event", "delete_event", "delete_events_range", "move_event"})
+    confirmable = frozenset({"delete_events_range"})
+
+    def handlers(self) -> dict[str, Handler]:
+        google = lambda: self.context.google  # noqa: E731  (lu à chaque appel, jamais copié)
+        return {
+            "events_week": lambda params: handle_events_week(google()),
+            "events_range": lambda params: handle_events_range(google(), params),
+            "availability_week": lambda params: handle_availability_week(google()),
+            "add_event": lambda params: handle_add_event(google(), params),
+            "move_event": lambda params: handle_move_event(google(), params),
+            "delete_event": lambda params: handle_delete_event(google(), params),
+            "delete_events_range": lambda params: handle_delete_events_range(google(), params),
+        }

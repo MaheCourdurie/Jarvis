@@ -120,7 +120,7 @@ Rien de tout cela n'est versionné (voir `.gitignore`).
 ## 7. Limites connues
 
 - **Pas d'interruption à la voix** : pendant qu'il parle, le micro est coupé pour qu'il ne s'entende pas. Pour le faire taire : `Échap` ou un clic sur le réacteur.
-- **Les actions passent par des formulations reconnues** (`Jarvis/API/intents.py`). Le modèle de langage ne déclenche rien lui-même : si une phrase n'est pas comprise, Jarvis demande de reformuler. Pour lui apprendre une tournure, ajoute-la au parseur concerné, avec un test dans `tests/test_intents.py`.
+- **Les actions passent par des formulations reconnues** (`Jarvis/API/core/intents.py`). Le modèle de langage ne déclenche rien lui-même : si une phrase n'est pas comprise, Jarvis demande de reformuler. Pour lui apprendre une tournure, ajoute-la au parseur concerné, avec un test dans `tests/test_intents.py`.
 - **Mails** : lecture des non lus et du dernier reçu, envoi. Pas de réponse, de transfert ni de suppression.
 - **Météo** : aujourd'hui et demain seulement.
 - **Recherche web** : elle passe par DuckDuckGo, sans clé, et prend 4 à 6 secondes, dont 2,5 à 3,5 pour que le modèle lise les pages et commence sa réponse. Pour aller plus vite, il faudrait un modèle plus petit (moins juste). Certains sites ne se laissent pas lire (pages construites en JavaScript, blocages) : Jarvis dit alors ce qu'il a trouvé et ce qui manque. La réponse vaut ce que valent les pages consultées, d'où les sources affichées.
@@ -160,3 +160,48 @@ git push
 ```
 
 Avant de pousser, vérifie avec `git status` qu'aucun fichier secret n'apparaît. `.env`, le secret client Google, le token et `contacts.json` sont déjà exclus par `.gitignore`.
+
+## 10. Après la refonte en agents (15 octobre 2026)
+
+Jarvis dirige maintenant 6 contrôleurs et 20 agents (voir « Organisation de l'API » dans le [README](README.md)).
+
+### À faire
+
+- [ ] **Configurer Google (jamais fait)** : sur [Google Cloud Console](https://console.cloud.google.com/), créer un projet, activer les API Gmail et Google Calendar, créer un identifiant OAuth « Application de bureau », télécharger le JSON dans `Jarvis/API/`, mettre son nom dans `.env` (`GOOGLE_CLIENT_SECRET_FILE=…`), puis connecter le compte depuis le panneau « Liaisons » du HUD (détails : section « Configuration Google » du README)
+- [ ] Redémarrer le bot Telegram, qui tourne avec l'ancien code : `launchctl kickstart -k gui/$(id -u)/fr.jarvis.telegram`
+- [ ] Faire le ménage : supprimer dans l'app Raccourcis les 2 anciens « Ne pas déranger » en double (les plus anciens, qui ne marchent pas) et la note de test « Jarvis peut maintenant écrire dans Notes »
+- [x] Autorisations macOS pour Python : Accessibilité, Enregistrement de l'écran, Automatisation (Notes, Rappels, mode sombre)
+- [x] Raccourcis « Activer / Désactiver Ne pas déranger » (macOS en anglais : le mode s'appelle « Do Not Disturb »)
+- [x] `blueutil` installé
+- [x] Adresse de départ des trajets dans `.env`
+- [x] Travail commité et poussé
+
+### À tester en vrai
+
+- [ ] Spotify : « chanson suivante », « mets du Daft Punk », « c'est quoi cette chanson ? »
+- [ ] « Regarde mon écran »
+- [ ] L'annonce d'une création dans le HUD (affichage et voix)
+- [ ] Une page créée, ouverte sur le téléphone
+- [ ] Après Google : mails (répondre, lire, chercher, archiver) et agenda (déplacer, événement récurrent)
+- [ ] Un raccourci de la maison (« allume la lumière du salon »), si tu as HomeKit
+- [ ] Verrouillage et Wi-Fi (déjà autorisés, pas essayés pour ne pas te couper)
+
+Testé en vrai : météo sur 7 jours, soleil, qualité de l'air, trajets depuis la maison, traduction, mémoire, routines, fichiers, résumé de page, documents Word, logo relu visuellement, script essayé en bac à sable, routage de secours, Notes, Rappels, mode sombre, luminosité, capture d'écran, Ne pas déranger.
+
+### Problèmes connus
+
+- La conversation attend pendant une création (jusqu'à 3 min derrière une page) : essayer `OLLAMA_NUM_PARALLEL=2`
+- Logos encore simples : un modèle plus gros ferait mieux
+- « Réunion demain pour le budget » donne un événement « Le budget »
+- Noms de lieux OpenStreetMap parfois étranges (« Chantier métro ligne C – Puits Colomiers Gare »), et « la piscine » introuvable à Colomiers (elle porte sans doute un autre nom dans OpenStreetMap)
+- `Jarvis/API/Doc_Technique_Api.md` est une copie périmée : à supprimer
+
+### Pour plus tard
+
+- Résumé intelligent de la boîte mail, prévenir avant un rendez-vous avec le trajet, trafic en direct et bus Tisséo
+- Météo heure par heure, comparer des prix, décrire une photo donnée
+- Agent code : générer ses tests, travailler dans un projet existant, corriger un fichier existant
+- Design : plusieurs propositions au choix, favicon ; documents en PDF ; voir ses créations depuis le téléphone
+- Routines à heure fixe, état des appareils de la maison
+- Relire `/incompris` chaque semaine et apprendre ces phrases à Jarvis (examen : `tests/test_agent_exam.py`)
+- Idées d'agents : budget, sport et santé

@@ -7,14 +7,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-import system_actions
-import weather
+from services import events, llm
+from agents import system as system_actions
+from services import weather
 
 
 class FakeGoogle:
     """Compte Google simulé : enregistre ce que Jarvis envoie et supprime."""
 
-    timezone = main.mail_client.timezone
+    timezone = main.context.google.timezone
     timezone_name = "Europe/Paris"
 
     def __init__(self):
@@ -70,10 +71,10 @@ class FakeGoogle:
 @pytest.fixture()
 def google(monkeypatch):
     fake = FakeGoogle()
-    monkeypatch.setattr(main, "mail_client", fake)
-    monkeypatch.setattr(main.dashboard, "google", fake)
-    main.dashboard.invalidate()
-    main.alarms.delete_all_alarms()
+    monkeypatch.setattr(main.context, "google", fake)
+    monkeypatch.setattr(main.context.dashboard, "google", fake)
+    main.context.dashboard.invalidate()
+    main.context.alarms.delete_all_alarms()
     # Ni réseau ni modèle pendant les tests.
     monkeypatch.setattr(weather, "get_weather", lambda city=None: {
         "city": city or "Paris", "temperature": 18, "apparent": 18, "code": 0, "description": "ciel dégagé",
@@ -81,11 +82,11 @@ def google(monkeypatch):
         "today": {"description": "ciel dégagé", "min": 12, "max": 21, "rain_probability": 10},
         "tomorrow": {"description": "pluie", "min": 11, "max": 17, "rain_probability": 80},
     })
-    monkeypatch.setattr("briefing.get_weather", weather.get_weather)
-    monkeypatch.setattr(main.llm, "ollama_status", lambda: (True, "ok"))
-    monkeypatch.setattr(main.llm, "warm_up", lambda: None)
-    monkeypatch.setattr(main.llm, "supports_tools", lambda: False)
-    monkeypatch.setattr(main.llm, "complete", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("hors ligne")))
+    monkeypatch.setattr("agents.briefing.get_weather", weather.get_weather)
+    monkeypatch.setattr(llm, "ollama_status", lambda: (True, "ok"))
+    monkeypatch.setattr(llm, "warm_up", lambda: None)
+    monkeypatch.setattr(llm, "supports_tools", lambda: False)
+    monkeypatch.setattr(llm, "complete", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("hors ligne")))
     return fake
 
 
@@ -140,14 +141,14 @@ def test_alarm_lifecycle_with_confirmation(client):
 
     ask = chat(client, "Supprime toutes mes alarmes")
     assert ask["pending"] == {"action": "delete_alarms_all", "params": {}}
-    assert len(main.alarms.list_alarms()) == 2  # rien n'est supprimé avant le « oui »
+    assert len(main.context.alarms.list_alarms()) == 2  # rien n'est supprimé avant le « oui »
 
     refused = chat(client, "Non", pending=ask["pending"])
-    assert refused["action"] == "cancelled" and len(main.alarms.list_alarms()) == 2
+    assert refused["action"] == "cancelled" and len(main.context.alarms.list_alarms()) == 2
 
     confirmed = chat(client, "Oui", pending=ask["pending"])
     assert "toutes les alarmes sont supprimées" in confirmed["reply"]
-    assert main.alarms.list_alarms() == []
+    assert main.context.alarms.list_alarms() == []
 
 
 def test_alarm_wording(client):
@@ -163,7 +164,7 @@ def test_alarm_wording(client):
 def test_past_alarm_is_refused(client):
     past = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
     reply = chat(client, f'/setalarm "{past}" "Trop tard"')
-    assert "déjà passée" in reply["reply"] and main.alarms.list_alarms() == []
+    assert "déjà passée" in reply["reply"] and main.context.alarms.list_alarms() == []
 
 
 def test_mail_is_shown_before_being_sent(client, google):
@@ -241,7 +242,7 @@ def test_conversation_goes_to_the_model_with_live_context(client, monkeypatch):
         seen.update(message=message, context=context, tools=tools)
         yield "Une approche audacieuse, Monsieur."
 
-    monkeypatch.setattr(main.llm, "chat_stream", fake_stream)
+    monkeypatch.setattr(llm, "chat_stream", fake_stream)
     reply = chat(client, "J'ai le temps de faire une sieste avant mon prochain rendez-vous ?")
     assert reply["source"] == "ollama" and reply["reply"] == "Une approche audacieuse, Monsieur."
     assert seen["context"].startswith("Contexte en direct : nous sommes le ")
@@ -253,20 +254,20 @@ def test_conversation_goes_to_the_model_with_live_context(client, monkeypatch):
 
 
 def test_model_offline_keeps_modules_available(client, monkeypatch):
-    monkeypatch.setattr(main.llm, "ollama_status", lambda: (False, "introuvable"))
+    monkeypatch.setattr(llm, "ollama_status", lambda: (False, "introuvable"))
     assert "hors ligne" in chat(client, "Raconte-moi une blague")["reply"]
     assert chat(client, "Quelle heure est-il ?")["action"] == "time"
 
 
 def test_help_is_not_triggered_by_ordinary_sentences(client, monkeypatch):
-    monkeypatch.setattr(main.llm, "chat_stream", lambda *args, **kwargs: iter(["Volontiers, Monsieur."]))
+    monkeypatch.setattr(llm, "chat_stream", lambda *args, **kwargs: iter(["Volontiers, Monsieur."]))
     assert chat(client, "aide")["action"] == "help"
     assert chat(client, "Que peux-tu faire ?")["reply"].startswith("Je gère votre messagerie")
     assert chat(client, "Aide-moi à comprendre les fractions")["source"] == "ollama"
 
 
 def test_stream_delivers_sentences_then_final(client, monkeypatch):
-    monkeypatch.setattr(main.llm, "chat_stream", lambda *args, **kwargs: iter(["Bien, Monsieur.", "Je m'en occupe."]))
+    monkeypatch.setattr(llm, "chat_stream", lambda *args, **kwargs: iter(["Bien, Monsieur.", "Je m'en occupe."]))
     response = client.post("/api/chat/stream", json={"message": "Raconte-moi une blague", "client": "hud"})
     events = [json.loads(line) for line in response.text.splitlines() if line]
     assert [event["type"] for event in events] == ["start", "sentence", "sentence", "final"]
@@ -290,10 +291,10 @@ def test_briefing_and_dashboard(client):
 
 def test_alarm_event_reaches_the_hud(client):
     first = client.get("/api/events").json()
-    main.events.publish("alarm", label="Réveil", speech="Monsieur, il est 7 heures 30.")
+    events.publish("alarm", label="Réveil", speech="Monsieur, il est 7 heures 30.")
     update = client.get(f"/api/events?after={first['last_id']}").json()
     assert [event["speech"] for event in update["events"]] == ["Monsieur, il est 7 heures 30."]
-    assert main.events.hud_is_listening()
+    assert events.hud_is_listening()
 
 
 def test_voice_endpoints_report_missing_engines(client):

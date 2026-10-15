@@ -1,5 +1,7 @@
 # Jarvis API - Documentation technique
 
+> Cette page décrit l'organisation d'avant le découpage en agents, contrôleurs et orchestrateur. La documentation à jour est dans [README.md](README.md).
+
 ## But du dossier
 
 Ce dossier regroupe la logique serveur de Jarvis:

@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT_DIR / "Jarvis" / "API"))
 
 import config  # noqa: E402  (premier import local : charge le .env)
 from phone_setup import set_env_values, show_qr  # noqa: E402
-from system_actions import keep_awake  # noqa: E402
+from agents.system import keep_awake  # noqa: E402
 
 
 LAUNCHER = ROOT_DIR / "run_jarvis.sh"

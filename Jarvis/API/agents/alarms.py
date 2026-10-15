@@ -3,13 +3,16 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import events
-import voice
+from services import events
+from services.alarm_store import repeat_days
+from services import voice
+from core.agent import Agent, Handler
 from config import (
     ALARM_NOTIFICATION_ENABLED,
     ALARM_SOUND_ENABLED,
@@ -43,6 +46,24 @@ def _parse_when(item: dict, timezone: Any) -> datetime | None:
         return None
 
 
+WEEKDAY_NAMES = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+
+
+def repeat_label(repeat: str | None) -> str:
+    """« tous les jours », « en semaine », « tous les lundis et jeudis »."""
+    if not repeat:
+        return ""
+    if repeat == "daily":
+        return "tous les jours"
+    if repeat == "weekdays":
+        return "du lundi au vendredi"
+    days = sorted(repeat_days(repeat))
+    names = [WEEKDAY_NAMES[day] + "s" for day in days]
+    if not names:
+        return ""
+    return "tous les " + (names[0] if len(names) == 1 else ", ".join(names[:-1]) + " et " + names[-1])
+
+
 def format_alarm_list(items: list[dict], timezone: Any) -> Reply:
     """Construit l'affichage des alarmes actives."""
     if not items:
@@ -53,11 +74,18 @@ def format_alarm_list(items: list[dict], timezone: Any) -> Reply:
     for item in items:
         when = _parse_when(item, timezone)
         when_text = format_when(when, now) if when else str(item.get("when", ""))
-        lines.append(f"- {when_text} : {item.get('label', 'Alarme')} [id: {item.get('id', '?')}]")
+        extra = ""
+        if item.get("repeat"):
+            extra = f" ({repeat_label(item['repeat'])})"
+        elif when and str(item.get("label", "")).startswith("Minuteur"):
+            extra = f" (reste {format_delay((when - now).total_seconds())})"
+        lines.append(f"- {when_text} : {item.get('label', 'Alarme')}{extra} [id: {item.get('id', '?')}]")
 
     speech = f"Vous avez {plural(len(items), 'alarme active', 'alarmes actives')}, {TITLE}."
     first_when = _parse_when(items[0], timezone)
-    if first_when:
+    if first_when and str(items[0].get("label", "")).startswith("Minuteur"):
+        speech += f" Il reste {format_delay((first_when - now).total_seconds())} sur le minuteur."
+    elif first_when:
         speech += f" La prochaine : {items[0].get('label', 'Alarme')}, {spoken_when(first_when, now)}."
     return Reply(text="\n".join(lines) + DELETE_HINT, speech=speech, data={"alarms": len(items)})
 
@@ -272,9 +300,18 @@ def handle_set_alarm(alarms: Any, timezone: Any, params: dict) -> Reply:
     if when < now - timedelta(seconds=30):
         return Reply(text=f"Cette heure est déjà passée, {TITLE}. Quelle échéance souhaitez-vous ?")
 
-    created = alarms.create_alarm(when, title)
+    repeat = params.get("repeat")
+    created = alarms.create_alarm(when, title, repeat=repeat) if repeat else alarms.create_alarm(when, title)
     when = _localize(datetime.fromisoformat(created["when"]), timezone)
     suffix = f" [id: {created['id']}]"
+
+    if repeat:
+        rhythm = repeat_label(repeat)
+        return Reply(
+            text=f"{'Réveil' if title == 'Réveil' else 'Alarme'} programmé{'' if title == 'Réveil' else 'e'} {rhythm} à {format_time(when)}, {TITLE}. Premier : {format_when(when, now)}.{suffix}",
+            speech=f"Entendu, {TITLE} : {rhythm} à {spoken_time(when)}.",
+            data={"alarm": created},
+        )
 
     if kind == "timer":
         duration = format_delay((when - now).total_seconds())
@@ -301,6 +338,20 @@ def handle_set_alarm(alarms: Any, timezone: Any, params: dict) -> Reply:
     return Reply(
         text=f"{headline} pour {format_when(when, now)}, {TITLE}{detail}.{suffix}",
         speech=f"{spoken} pour {spoken_when(when, now)}, {TITLE}.",
+        data={"alarm": created},
+    )
+
+
+def handle_snooze(alarms: Any, timezone: Any, params: dict) -> Reply:
+    """« Encore 5 minutes » : la dernière alarme sonnera de nouveau."""
+    last = alarms.last_triggered()
+    minutes = int(params.get("minutes") or 5)
+    label = (last or {}).get("label") or "Alarme"
+    when = datetime.now(timezone) + timedelta(minutes=minutes)
+    created = alarms.create_alarm(when, label)
+    return Reply(
+        text=f"Entendu, {TITLE} : « {label} » sonnera de nouveau à {format_time(when)}. [id: {created['id']}]",
+        speech=f"Entendu, {TITLE}. Je reviens vers vous dans {plural(minutes, 'minute')}.",
         data={"alarm": created},
     )
 
@@ -363,3 +414,38 @@ def handle_delete_alarms_all(alarms: Any, params: dict | None = None) -> Reply:
     if deleted_count == 0:
         return Reply(text=f"Aucune alarme à supprimer, {TITLE}.")
     return Reply(text=f"C'est fait, {TITLE} : toutes les alarmes sont supprimées.")
+
+
+class AlarmAgent(Agent):
+    """Alarmes, rappels et minuteurs locaux, avec leur planificateur en tâche de fond."""
+
+    name = "alarmes"
+    confirmable = frozenset({"delete_alarms_all"})
+
+    def __init__(self, context) -> None:
+        super().__init__(context)
+        self._started = False
+
+    def handlers(self) -> dict[str, Handler]:
+        store = lambda: self.context.alarms  # noqa: E731
+        return {
+            "set_alarm": lambda params: handle_set_alarm(store(), self.context.timezone, params),
+            "list_alarms": lambda params: handle_list_alarms(store(), self.context.timezone),
+            "delete_alarm": lambda params: handle_delete_alarm(store(), params),
+            "delete_alarms_range": lambda params: handle_delete_alarms_range(store(), params),
+            "delete_alarms_all": lambda params: handle_delete_alarms_all(store(), params),
+            "delete_timers": lambda params: handle_delete_timers(store()),
+            "snooze_alarm": lambda params: handle_snooze(store(), self.context.timezone, params),
+        }
+
+    def start(self) -> None:
+        if self._started:
+            return
+        print(
+            "[ALARM] scheduler started "
+            f"(notification={ALARM_NOTIFICATION_ENABLED}, sound={ALARM_SOUND_ENABLED}, "
+            f"repeat={ALARM_SOUND_REPEAT}, sound_file={ALARM_SOUND_FILE})",
+            flush=True,
+        )
+        threading.Thread(target=alarm_scheduler_loop, args=(self.context.alarms,), daemon=True).start()
+        self._started = True

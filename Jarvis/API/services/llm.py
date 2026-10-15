@@ -18,6 +18,7 @@ from config import (
     OLLAMA_MODEL,
     OLLAMA_URL,
     SYSTEM_PROMPT_FILE,
+    LLM_NUM_CTX,
 )
 from persona import TITLE
 
@@ -263,7 +264,7 @@ def _payload(messages: list[dict], temperature: float, stream: bool) -> dict:
     return {
         "model": OLLAMA_MODEL,
         "messages": messages,
-        "options": {"temperature": temperature, "num_predict": LLM_MAX_TOKENS},
+        "options": {"temperature": temperature, "num_predict": LLM_MAX_TOKENS, "num_ctx": LLM_NUM_CTX},
         "keep_alive": OLLAMA_KEEP_ALIVE,
         # Les modèles « à réflexion » répondraient trop lentement pour un échange vocal.
         "think": False,
@@ -284,14 +285,35 @@ def claims_unexecuted_action(user_message: str, reply: str) -> bool:
     return bool(_ACTION_REQUEST.search(user_message or "") and _FALSE_CLAIM.search(reply or ""))
 
 
-def complete(system: str, prompt: str, temperature: float, max_tokens: int, timeout: float = 45) -> str:
-    """Génération ponctuelle hors conversation (rédaction d'un objet ou d'un corps de mail)."""
+def complete(
+    system: str,
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+    timeout: float = 45,
+    json_mode: bool = False,
+    num_ctx: Optional[int] = None,
+    images: Optional[list[str]] = None,
+) -> str:
+    """Génération ponctuelle hors conversation (mail, code, page, palette…).
+
+    json_mode : le modèle est contraint de répondre par un objet JSON valide.
+    num_ctx : mémoire de travail plus grande que celle de la conversation (une page entière
+    à retoucher). Ollama recharge alors le modèle (environ 4 s) : à réserver aux longues tâches.
+    images : images en base64 jointes à la demande (le modèle sait les regarder).
+    """
     payload = _payload(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature,
         stream=False,
     )
     payload["options"]["num_predict"] = max_tokens
+    if json_mode:
+        payload["format"] = "json"
+    if num_ctx:
+        payload["options"]["num_ctx"] = num_ctx
+    if images:
+        payload["messages"][-1]["images"] = images
     res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
     res.raise_for_status()
     return (res.json().get("message", {}).get("content") or "").strip()
@@ -329,7 +351,7 @@ def keep_warm() -> bool:
     try:
         requests.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": OLLAMA_MODEL, "keep_alive": OLLAMA_KEEP_ALIVE},
+            json={"model": OLLAMA_MODEL, "keep_alive": OLLAMA_KEEP_ALIVE, "options": {"num_ctx": LLM_NUM_CTX}},
             timeout=120,
         )
         return True

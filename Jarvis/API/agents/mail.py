@@ -4,7 +4,9 @@ import re
 import unicodedata
 from typing import Any
 
-import llm
+from services import llm
+from core.agent import Agent, Handler
+from config import load_contacts
 from persona import Reply, TITLE, plural
 
 
@@ -199,26 +201,6 @@ def _contains_disallowed_mail_content(*values: str) -> bool:
         return False
 
     return any(term in compact for term in DISALLOWED_MAIL_COMPACT_TERMS)
-
-
-def extract_first_email(value: str) -> str | None:
-    """Extrait la première adresse email trouvée dans une chaîne."""
-    match = EMAIL_PATTERN.search(value or "")
-    if not match:
-        return None
-    return match.group(0)
-
-
-def extract_recent_email_from_history(history: list[Any], max_messages: int = 8) -> str | None:
-    """Récupère la dernière adresse email visible dans l'historique récent."""
-    for item in reversed(history[-max_messages:]):
-        content = getattr(item, "content", None)
-        if content is None and isinstance(item, dict):
-            content = item.get("content", "")
-        email = extract_first_email(str(content or ""))
-        if email:
-            return email
-    return None
 
 
 def normalize_generated_french(text: str) -> str:
@@ -476,3 +458,123 @@ def handle_send_mail(mail_client: Any, params: dict) -> Reply:
         text=f"Message envoyé à {recipient}, {TITLE} (objet : {subject}).",
         speech=f"Message envoyé à {recipient}, {TITLE}.",
     )
+
+
+# ── Chercher, lire, répondre, ranger ───────────────────────────────────────
+
+def mail_query(who: str) -> tuple[str, str]:
+    """Traduit « Paul », « la banque », « le dernier » en recherche Gmail, avec un libellé à dire."""
+    who = re.sub(r"\s+", " ", (who or "").strip(" .!?\"'«»"))
+    if not who or re.fullmatch(r"(?:le |mon )?dernier(?: mail| message)?", who, flags=re.IGNORECASE):
+        return "in:inbox", "votre dernier message"
+    contacts = {name.lower(): email for name, email in load_contacts().items()}
+    if who.lower() in contacts:
+        return f"from:{contacts[who.lower()]}", f"le message de {who}"
+    if "@" in who:
+        return f"from:{who}", f"le message de {who}"
+    article = re.match(r"^(?:la|le|les|l'|du|des|de la|de l')\s*", who, flags=re.IGNORECASE)
+    if article:
+        topic = who[article.end():]
+        return topic, f"le message concernant {topic}"
+    return f"from:{who}", f"le message de {who}"
+
+
+def _find_one(mail_client: Any, params: dict) -> tuple[dict | None, str]:
+    query, label = mail_query(str(params.get("who") or ""))
+    found = mail_client.search_emails(query, limit=1)
+    return (found[0] if found else None), label
+
+
+def handle_search_mail(mail_client: Any, params: dict) -> Reply:
+    query, label = mail_query(str(params.get("who") or ""))
+    items = mail_client.search_emails(query, limit=5)
+    if not items:
+        return Reply(text=f"Je ne trouve aucun message pour « {params.get('who')} », {TITLE}.")
+    lines = [f"- {_sender(item)} : {item.get('subject') or '(sans objet)'}" for item in items]
+    first = items[0]
+    return Reply(
+        text=f"Ce que j'ai trouvé, {TITLE} :\n" + "\n".join(lines),
+        speech=f"J'ai trouvé {plural(len(items), 'message')}, {TITLE}. Le plus récent vient de {_sender(first)} : {first.get('subject') or 'sans objet'}.",
+        data={"mails": len(items)},
+    )
+
+
+def handle_read_mail(mail_client: Any, params: dict) -> Reply:
+    found, label = _find_one(mail_client, params)
+    if found is None:
+        return Reply(text=f"Je ne trouve pas {label}, {TITLE}.")
+    full = mail_client.get_email(found["id"])
+    body = re.sub(r"\n{3,}", "\n\n", (full.get("body") or found.get("bodyPreview") or "").strip())
+    sender, subject = _sender(full), full.get("subject") or "(sans objet)"
+    spoken_body = re.sub(r"https?://\S+", "", body.replace("\n", " "))[:600]
+    return Reply(
+        text=f"De : {sender}\nObjet : {subject}\n\n{body[:4000] or '(message vide)'}",
+        speech=f"Message de {sender}, {TITLE}, au sujet de : {subject}. {spoken_body}",
+        data={"mail_id": found["id"]},
+    )
+
+
+def handle_reply_mail(mail_client: Any, params: dict) -> Reply:
+    body = str(params.get("body") or "").strip()
+    if not body:
+        return Reply(text=f"Que dois-je répondre, {TITLE} ?")
+    if _contains_disallowed_mail_content(body):
+        return Reply(text=f"Je préfère ne pas envoyer cette réponse, {TITLE} : son contenu est inapproprié.")
+
+    if params.get("mail_id"):  # confirmé : on répond au message présenté
+        mail_client.reply_to(mail_client.get_email(params["mail_id"]), body)
+        return Reply(text=f"Réponse envoyée, {TITLE}.")
+
+    found, label = _find_one(mail_client, params)
+    if found is None:
+        return Reply(text=f"Je ne trouve pas {label}, {TITLE}.")
+    subject = found.get("subject") or "(sans objet)"
+    polished = generate_email_body(f"Re: {subject}", f"Réponse à {_sender(found)} : {body}", body, polish_only=True) or body
+    pending = {"action": "reply_mail", "params": {"mail_id": found["id"], "body": polished, "who": params.get("who")}}
+    if not params.get("confirm"):
+        mail_client.reply_to(mail_client.get_email(found["id"]), polished)
+        return Reply(text=f"Réponse envoyée à {_sender(found)}, {TITLE}.")
+    return Reply(
+        text=f"Ma réponse à {_sender(found)} (« {subject} »), {TITLE} :\n\n{polished}\n\nDois-je l'envoyer ?",
+        speech=f"J'ai préparé la réponse à {_sender(found)}, {TITLE}. Dois-je l'envoyer ?",
+        pending=pending,
+    )
+
+
+def _tidy(mail_client: Any, params: dict, action: str) -> Reply:
+    verb, done = ("archiver", "archivé") if action == "archive_mail" else ("mettre à la corbeille", "mis à la corbeille")
+    if params.get("mail_id"):
+        (mail_client.archive_email if action == "archive_mail" else mail_client.trash_email)(params["mail_id"])
+        return Reply(text=f"C'est fait, {TITLE} : message {done}.")
+    found, label = _find_one(mail_client, params)
+    if found is None:
+        return Reply(text=f"Je ne trouve pas {label}, {TITLE}.")
+    summary = f"{_sender(found)} — « {found.get('subject') or '(sans objet)'} »"
+    if params.get("confirm"):
+        return Reply(
+            text=f"Dois-je {verb} ce message, {TITLE} ?\n{summary}",
+            speech=f"Dois-je {verb} le message de {_sender(found)}, {TITLE} ?",
+            pending={"action": action, "params": {"mail_id": found["id"]}},
+        )
+    return _tidy(mail_client, {"mail_id": found["id"]}, action)
+
+
+class MailAgent(Agent):
+    """Messagerie Gmail : résumé, recherche, lecture, envoi, réponse, archivage et corbeille."""
+
+    name = "messagerie"
+    needs_google = True
+    writes = frozenset({"send_mail", "reply_mail", "archive_mail", "trash_mail"})
+    confirmable = frozenset({"send_mail", "reply_mail", "archive_mail", "trash_mail"})
+
+    def handlers(self) -> dict[str, Handler]:
+        return {
+            "mail_resume": lambda params: format_mail_resume(self.context.google.get_unread_emails(limit=5)),
+            "mail_last": lambda params: format_last_mail(self.context.google.get_latest_email()),
+            "send_mail": lambda params: handle_send_mail(self.context.google, params),
+            "search_mail": lambda params: handle_search_mail(self.context.google, params),
+            "read_mail": lambda params: handle_read_mail(self.context.google, params),
+            "reply_mail": lambda params: handle_reply_mail(self.context.google, params),
+            "archive_mail": lambda params: _tidy(self.context.google, params, "archive_mail"),
+            "trash_mail": lambda params: _tidy(self.context.google, params, "trash_mail"),
+        }

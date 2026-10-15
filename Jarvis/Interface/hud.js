@@ -564,6 +564,7 @@ async function pollEvents() {
     state.lastEventId = data.last_id;
     for (const event of data.events || []) {
       if (event.type === 'alarm') announceAlarm(event);
+      else if (event.type === 'creation') announceCreation(event);
     }
   } catch (err) {
     /* l'API redémarre peut-être : on réessaiera */
@@ -576,6 +577,13 @@ function announceAlarm(event) {
   voice.speak(event.speech || event.label);
   render();
   refreshDashboard();
+}
+
+// Une création de l'atelier (code, page, logo, palette) est prête, ou a échoué.
+function announceCreation(event) {
+  addEntry('jarvis', `✦ ${event.text || event.speech || event.label}`);
+  voice.speak(event.speech || event.label);
+  render();
 }
 
 // ── Liaison Google ────────────────────────────────────────────────────────

@@ -75,6 +75,9 @@ OLLAMA_MODEL = env_str("OLLAMA_MODEL", "jarvis")
 OLLAMA_KEEP_ALIVE = env_str("OLLAMA_KEEP_ALIVE", "30m")
 LLM_MAX_TOKENS = env_int("JARVIS_MAX_TOKENS", 320, 32, 2048)
 LLM_HISTORY_MESSAGES = env_int("JARVIS_HISTORY_MESSAGES", 12, 0, 60)
+# Mémoire de travail du modèle, la même pour tous les appels : Ollama ne recharge jamais le
+# modèle (un changement coûte ~4 s), et elle suffit à relire puis réécrire une page entière.
+LLM_NUM_CTX = env_int("JARVIS_NUM_CTX", 12288, 2048, 32768)
 
 # 1 = Jarvis refuse tout ce qui n'est pas une action reconnue (ancien comportement).
 # 0 (défaut) = Jarvis converse librement, comme dans Iron Man.
@@ -128,6 +131,29 @@ ALARM_NOTIFICATION_ENABLED = env_flag("ALARM_NOTIFICATION_ENABLED", True)
 ALARM_SOUND_ENABLED = env_flag("ALARM_SOUND_ENABLED", True)
 ALARM_SOUND_REPEAT = env_int("ALARM_SOUND_REPEAT", default=1, min_value=1, max_value=10)
 ALARM_SOUND_FILE = env_str("ALARM_SOUND_FILE", "")
+
+# ── Créations (agents code et design) ─────────────────────────────────────
+# Dossier où Jarvis range les scripts, pages, logos et palettes qu'il crée.
+CREATIONS_DIR = Path(env_str("JARVIS_CREATIONS_DIR", str(Path.home() / "Documents" / "Jarvis"))).expanduser()
+# Longueur maximale d'une création, en jetons (le modèle en écrit environ 20 par seconde :
+# une page web complète en demande près de 4 000, soit trois minutes).
+CREATION_MAX_TOKENS = env_int("JARVIS_CREATION_MAX_TOKENS", 6000, 256, 8000)
+# L'agent code lance chaque script Python dans un bac à sable (sans réseau, sans écrire hors
+# d'un dossier temporaire) pour vérifier qu'il tourne vraiment.
+CODE_TRIAL_RUN = env_flag("JARVIS_CODE_TRIAL_RUN", True)
+# L'agent design regarde le rendu de sa création et corrige les défauts graves.
+DESIGN_SELF_REVIEW = env_flag("JARVIS_DESIGN_SELF_REVIEW", True)
+
+# ── Mémoire de Jarvis (« souviens-toi que… ») ─────────────────────────────
+MEMORY_FILE = Path(env_str("JARVIS_MEMORY_FILE", str(API_DIR / ".memory.json"))).expanduser()
+# Journal des phrases que Jarvis n'a pas su confier à un agent (pour lui apprendre).
+MISSES_FILE = Path(env_str("JARVIS_MISSES_FILE", str(API_DIR / ".incompris.jsonl"))).expanduser()
+
+# ── Trajets ────────────────────────────────────────────────────────────────
+# Point de départ des trajets (une adresse précise est plus juste que la ville).
+HOME_ADDRESS = env_str("JARVIS_HOME_ADDRESS", "")
+# Routines (« mode travail ») : des listes de phrases que Jarvis exécute à la suite.
+ROUTINES_FILE = Path(env_str("JARVIS_ROUTINES_FILE", str(API_DIR / "routines.json"))).expanduser()
 
 # ── Carnet d'adresses (nom → email) pour dicter un destinataire à la voix ──
 CONTACTS_FILE = Path(env_str("JARVIS_CONTACTS_FILE", str(API_DIR / "contacts.json"))).expanduser()

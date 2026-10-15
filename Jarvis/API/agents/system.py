@@ -13,12 +13,14 @@ import shutil
 import subprocess
 import threading
 import time
+import unicodedata
 import webbrowser
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote_plus
 
 from persona import Reply, TITLE, ack, format_date, format_time, spoken_time, strip_accents
+from core.agent import Agent, Handler
 
 try:
     import psutil
@@ -547,3 +549,178 @@ def handle_sleep_display(params: dict | None = None) -> Reply:
         return Reply(text=f"{ack()} Je mets l'écran en veille.")
     print(f"[SYSTEM] Mise en veille impossible: {detail}", flush=True)
     return Reply(text=f"Je ne parviens pas à mettre l'écran en veille, {TITLE}.")
+
+
+# ── Écran, apparence, réseau ───────────────────────────────────────────────
+
+ACCESSIBILITY_HINT = (
+    "macOS demande d'autoriser Jarvis : Réglages Système › Confidentialité et sécurité › "
+    "Accessibilité (et Automatisation), puis cochez le terminal ou Python."
+)
+# Raccourcis (app Raccourcis) qui activent et coupent « Ne pas déranger ».
+DND_SHORTCUTS = {True: "Activer Ne pas déranger", False: "Désactiver Ne pas déranger"}
+
+
+def _osascript(script: str) -> tuple[bool, str]:
+    return _run(["osascript", "-e", script])
+
+
+def _mac_only(what: str) -> Reply | None:
+    return None if SYSTEM == "darwin" else _unsupported(what)
+
+
+def handle_brightness(params: dict) -> Reply:
+    """Luminosité de l'écran : plus ou moins forte, par crans (touches luminosité du clavier)."""
+    if (refusal := _mac_only("le réglage de la luminosité")) is not None:
+        return refusal
+    up = params.get("direction") != "down"
+    steps = max(1, min(int(params.get("steps") or 3), 16))
+    key = 144 if up else 145
+    ok, detail = _osascript(f'tell application "System Events" to repeat {steps} times\nkey code {key}\nend repeat')
+    if not ok:
+        print(f"[SYSTEM] Luminosité impossible: {detail}", flush=True)
+        return Reply(text=f"Je ne parviens pas à régler la luminosité, {TITLE}. {ACCESSIBILITY_HINT}",
+                     speech=f"Je ne parviens pas à régler la luminosité, {TITLE}. Il me faut une autorisation, le détail est à l'écran.")
+    return Reply(text=f"{ack()} {'J\'augmente' if up else 'Je baisse'} la luminosité.")
+
+
+def handle_dark_mode(params: dict) -> Reply:
+    """Mode sombre : activer, désactiver ou basculer."""
+    if (refusal := _mac_only("le mode sombre")) is not None:
+        return refusal
+    wanted = params.get("on")
+    value = "not dark mode" if wanted is None else ("true" if wanted else "false")
+    ok, detail = _osascript(f'tell application "System Events" to tell appearance preferences to set dark mode to {value}')
+    if not ok:
+        print(f"[SYSTEM] Mode sombre impossible: {detail}", flush=True)
+        return Reply(text=f"Je ne parviens pas à changer l'apparence, {TITLE}. {ACCESSIBILITY_HINT}",
+                     speech=f"Je ne parviens pas à changer l'apparence, {TITLE}. Il me faut une autorisation, le détail est à l'écran.")
+    state = {None: "J'inverse l'apparence", True: "Je passe en mode sombre", False: "Je repasse en mode clair"}[wanted]
+    return Reply(text=f"{ack()} {state}.")
+
+
+def handle_lock_screen(params: dict | None = None) -> Reply:
+    """Verrouille la session (comme Ctrl + Cmd + Q)."""
+    if (refusal := _mac_only("le verrouillage de la session")) is not None:
+        return refusal
+    ok, detail = _osascript('tell application "System Events" to keystroke "q" using {control down, command down}')
+    if not ok:
+        print(f"[SYSTEM] Verrouillage impossible: {detail}", flush=True)
+        return handle_sleep_display()
+    return Reply(text=f"{ack()} Je verrouille le Mac.")
+
+
+def handle_screenshot(params: dict | None = None) -> Reply:
+    """Capture d'écran enregistrée sur le bureau."""
+    if (refusal := _mac_only("la capture d'écran")) is not None:
+        return refusal
+    path = os.path.expanduser(f"~/Desktop/Capture Jarvis {datetime.now():%Y-%m-%d à %H.%M.%S}.png")
+    ok, detail = _run(["screencapture", "-x", path])
+    if not ok or not os.path.exists(path):
+        print(f"[SYSTEM] Capture impossible: {detail}", flush=True)
+        return Reply(text=f"Je ne parviens pas à capturer l'écran, {TITLE}. Autorisez l'enregistrement de l'écran dans Réglages Système › Confidentialité et sécurité.")
+    return Reply(text=f"{ack()} Capture enregistrée : {path}", speech=f"{ack()} La capture est sur votre bureau.", data={"path": path})
+
+
+def _wifi_device() -> str:
+    ok, listing = _run(["networksetup", "-listallhardwareports"])
+    match = re.search(r"Hardware Port: (?:Wi-Fi|AirPort)\nDevice: (\w+)", listing or "") if ok else None
+    return match.group(1) if match else "en0"
+
+
+def handle_wifi(params: dict) -> Reply:
+    """Active ou coupe le Wi-Fi."""
+    if (refusal := _mac_only("le pilotage du Wi-Fi")) is not None:
+        return refusal
+    on = bool(params.get("on", True))
+    ok, detail = _run(["networksetup", "-setairportpower", _wifi_device(), "on" if on else "off"])
+    if not ok:
+        print(f"[SYSTEM] Wi-Fi impossible: {detail}", flush=True)
+        return Reply(text=f"Je ne parviens pas à {'activer' if on else 'couper'} le Wi-Fi, {TITLE}.")
+    return Reply(text=f"{ack()} Wi-Fi {'activé' if on else 'coupé'}.")
+
+
+def handle_bluetooth(params: dict) -> Reply:
+    """Active ou coupe le Bluetooth (outil blueutil requis)."""
+    on = bool(params.get("on", True))
+    if not shutil.which("blueutil"):
+        return Reply(
+            text=f"Pour piloter le Bluetooth, il me faut l'outil blueutil, {TITLE} : brew install blueutil",
+            speech=f"Il me faut un petit outil pour piloter le Bluetooth, {TITLE}. La commande d'installation est à l'écran.",
+        )
+    ok, detail = _run(["blueutil", "--power", "1" if on else "0"])
+    if not ok:
+        return Reply(text=f"Je ne parviens pas à piloter le Bluetooth, {TITLE}.")
+    return Reply(text=f"{ack()} Bluetooth {'activé' if on else 'coupé'}.")
+
+
+def installed_shortcuts(name: str) -> list[str]:
+    """Identifiants des raccourcis installés sous ce nom (il peut y en avoir plusieurs).
+
+    L'app Raccourcis décompose les accents (« é » = e + ´) : on compare les noms normalisés.
+    """
+    ok, listing = _run(["shortcuts", "list", "--show-identifiers"], timeout=15)
+    if not ok:
+        return []
+    wanted = unicodedata.normalize("NFC", name).casefold()
+    found = []
+    for line in listing.splitlines():
+        match = re.match(r"^(.*) \(([0-9A-F-]{36})\)$", line.strip())
+        if match and unicodedata.normalize("NFC", match.group(1)).casefold() == wanted:
+            found.append(match.group(2))
+    return found
+
+
+def run_shortcut(name: str, timeout: float = 20) -> tuple[bool, str]:
+    """Lance le raccourci ; si plusieurs portent ce nom, essaie chacun jusqu'à ce qu'un réussisse."""
+    detail = "raccourci introuvable"
+    for identifier in installed_shortcuts(name):
+        ok, detail = _run(["shortcuts", "run", identifier], timeout=timeout)
+        if ok:
+            return True, detail
+    return False, detail
+
+
+def handle_do_not_disturb(params: dict) -> Reply:
+    """« Ne pas déranger » : macOS ne l'expose qu'à l'app Raccourcis."""
+    on = bool(params.get("on", True))
+    name = DND_SHORTCUTS[on]
+    if SYSTEM != "darwin" or not shutil.which("shortcuts"):
+        return _unsupported("le mode Ne pas déranger")
+    ok, detail = run_shortcut(name)
+    if not ok:
+        print(f"[SYSTEM] Ne pas déranger impossible: {detail}", flush=True)
+        return Reply(
+            text=(
+                f"Il me manque le raccourci « {name} », {TITLE}. Créez-le dans l'app Raccourcis avec l'action "
+                f"« Définir la concentration » ({'activer' if on else 'désactiver'} Ne pas déranger), puis redemandez-moi."
+            ),
+            speech=f"Il me manque un raccourci pour cela, {TITLE}. La marche à suivre est à l'écran.",
+        )
+    return Reply(text=f"{ack()} Ne pas déranger {'activé' if on else 'désactivé'}.")
+
+
+class SystemAgent(Agent):
+    """Pilotage du poste : applications, liens, volume, veille, et état des capteurs."""
+
+    name = "poste"
+    local_only = frozenset(SYSTEM_CONTROL_ACTIONS - {"web_search"}) | {
+        "brightness", "dark_mode", "lock_screen", "screenshot", "wifi", "bluetooth", "do_not_disturb",
+    }
+
+    def handlers(self) -> dict[str, Handler]:
+        return {
+            "system_status": handle_system_status,
+            "open_app": handle_open_app,
+            "quit_app": handle_quit_app,
+            "open_url": handle_open_url,
+            "volume": handle_volume,
+            "sleep_display": handle_sleep_display,
+            "brightness": handle_brightness,
+            "dark_mode": handle_dark_mode,
+            "lock_screen": handle_lock_screen,
+            "screenshot": handle_screenshot,
+            "wifi": handle_wifi,
+            "bluetooth": handle_bluetooth,
+            "do_not_disturb": handle_do_not_disturb,
+        }

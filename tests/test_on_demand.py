@@ -5,7 +5,8 @@ import time
 from fastapi.testclient import TestClient
 
 import main
-import on_demand
+from services import llm
+from services import on_demand
 
 
 class Clock:
@@ -56,8 +57,8 @@ def test_the_watcher_puts_jarvis_to_sleep(monkeypatch):
 
 
 def test_every_request_counts_as_activity(monkeypatch):
-    monkeypatch.setattr(main.llm, "warm_up", lambda: None)
-    monkeypatch.setattr(main.llm, "ollama_status", lambda: (True, "ok"))
+    monkeypatch.setattr(llm, "warm_up", lambda: None)
+    monkeypatch.setattr(llm, "ollama_status", lambda: (True, "ok"))
     with TestClient(main.app, base_url="http://localhost") as client:
         main.activity.last = main.activity.clock() - 3600
         client.get("/api/status")

@@ -19,8 +19,8 @@ from persona import (
     spoken_time,
     strip_accents,
 )
-from system_actions import read_system_metrics, system_alerts
-from weather import WeatherError, get_weather, spoken_degrees, summarize_now
+from agents.system import read_system_metrics, system_alerts
+from services.weather import WeatherError, get_weather, spoken_degrees, summarize_now
 
 
 GOOGLE_CACHE_SECONDS = 90

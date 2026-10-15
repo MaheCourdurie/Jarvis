@@ -4,13 +4,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+from routes import security
+from services import llm
 import phone_setup
 
 
 @pytest.fixture()
 def client(monkeypatch):
-    monkeypatch.setattr(main.llm, "warm_up", lambda: None)
-    monkeypatch.setattr(main.llm, "ollama_status", lambda: (True, "ok"))
+    monkeypatch.setattr(llm, "warm_up", lambda: None)
+    monkeypatch.setattr(llm, "ollama_status", lambda: (True, "ok"))
     with TestClient(main.app, base_url="http://localhost") as test_client:
         yield test_client
 
@@ -20,12 +22,12 @@ RELAYED = {"X-Forwarded-For": "100.90.121.78", "Tailscale-User-Login": "moi@exem
 
 
 def test_this_mac_needs_no_code(client, monkeypatch):
-    monkeypatch.setattr(main, "ACCESS_TOKEN", "secret-123")
+    monkeypatch.setattr(security, "ACCESS_TOKEN", "secret-123")
     assert client.get("/api/status").status_code == 200
 
 
 def test_other_devices_need_the_code(client, monkeypatch):
-    monkeypatch.setattr(main, "ACCESS_TOKEN", "secret-123")
+    monkeypatch.setattr(security, "ACCESS_TOKEN", "secret-123")
     assert client.get("/api/status", headers=RELAYED).status_code == 401
     assert client.get("/api/status", headers={**RELAYED, "X-Jarvis-Token": "mauvais"}).status_code == 401
     assert client.get("/api/status", headers={**RELAYED, "X-Jarvis-Token": "secret-123"}).status_code == 200
@@ -34,23 +36,23 @@ def test_other_devices_need_the_code(client, monkeypatch):
 
 
 def test_remote_access_is_off_without_a_code(client, monkeypatch):
-    monkeypatch.setattr(main, "ACCESS_TOKEN", "")
+    monkeypatch.setattr(security, "ACCESS_TOKEN", "")
     response = client.get("/api/status", headers=RELAYED)
     assert response.status_code == 403 and "run_jarvis.sh phone" in response.json()["detail"]
 
 
 def test_the_hud_itself_loads_without_a_code(client, monkeypatch):
     # Le HUD ne contient rien de personnel : c'est lui qui demande le code avant d'appeler l'API.
-    monkeypatch.setattr(main, "ACCESS_TOKEN", "secret-123")
+    monkeypatch.setattr(security, "ACCESS_TOKEN", "secret-123")
     page = client.get("/", headers=RELAYED)
     assert page.status_code == 200 and "Code d'accès" in page.text
 
 
 def test_remote_detection():
-    assert main.is_remote_request({"host": "localhost:8001"}) is False
-    assert main.is_remote_request({"host": "127.0.0.1:8001"}) is False
-    assert main.is_remote_request({"host": "mon-mac.tail1234.ts.net"}) is True
-    assert main.is_remote_request({"host": "127.0.0.1:8001", "x-forwarded-for": "100.1.2.3"}) is True
+    assert security.is_remote_request({"host": "localhost:8001"}) is False
+    assert security.is_remote_request({"host": "127.0.0.1:8001"}) is False
+    assert security.is_remote_request({"host": "mon-mac.tail1234.ts.net"}) is True
+    assert security.is_remote_request({"host": "127.0.0.1:8001", "x-forwarded-for": "100.1.2.3"}) is True
 
 
 def test_phone_settings_are_written_once(tmp_path):

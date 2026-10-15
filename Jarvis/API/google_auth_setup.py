@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from dotenv import load_dotenv
-from google_client import GoogleClient, GoogleConfigError
+from services.google_client import GoogleClient, GoogleConfigError
 
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(ROOT_ENV)

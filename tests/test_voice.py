@@ -4,8 +4,8 @@ import wave
 
 import pytest
 
-import llm
-import voice
+from services import llm
+from services import voice
 
 
 @pytest.mark.parametrize(

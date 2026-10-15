@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
 
 import requests
 
@@ -13,6 +14,10 @@ from persona import Reply, TITLE
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+WEEKDAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+# Indice européen de qualité de l'air (EAQI) : seuil haut de chaque niveau.
+AIR_LEVELS = [(20, "bonne"), (40, "correcte"), (60, "moyenne"), (80, "médiocre"), (100, "mauvaise"), (10_000, "très mauvaise")]
 CACHE_SECONDS = 600
 
 # Codes météo WMO → description française.
@@ -95,7 +100,7 @@ def _locate(city: str) -> dict:
 
 def _day(daily: dict, index: int) -> dict | None:
     try:
-        return {
+        day = {
             "description": describe_code(daily["weather_code"][index]),
             "min": round(daily["temperature_2m_min"][index]),
             "max": round(daily["temperature_2m_max"][index]),
@@ -103,6 +108,11 @@ def _day(daily: dict, index: int) -> dict | None:
         }
     except (KeyError, IndexError, TypeError):
         return None
+    for key in ("time", "sunrise", "sunset"):
+        values = daily.get(key) or []
+        if index < len(values):
+            day[key] = values[index]
+    return day
 
 
 def get_weather(city: str | None = None) -> dict:
@@ -123,9 +133,9 @@ def get_weather(city: str | None = None) -> dict:
                 "latitude": place["latitude"],
                 "longitude": place["longitude"],
                 "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m,is_day",
-                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset",
                 "timezone": "auto",
-                "forecast_days": 2,
+                "forecast_days": 7,
             },
             timeout=8,
         )
@@ -147,6 +157,9 @@ def get_weather(city: str | None = None) -> dict:
         "is_day": bool(current.get("is_day", 1)),
         "today": _day(daily, 0),
         "tomorrow": _day(daily, 1),
+        "days": [day for day in (_day(daily, index) for index in range(7)) if day],
+        "latitude": place["latitude"],
+        "longitude": place["longitude"],
     }
 
     with _lock:
@@ -196,7 +209,11 @@ def handle_weather(params: dict | None = None) -> Reply:
             return Reply(text=f"Je ne trouve pas cette ville, {TITLE}.")
         return Reply(text=f"Je ne parviens pas à joindre le service météo, {TITLE}.")
 
-    if params.get("day") == "tomorrow":
+    day = params.get("day")
+    if day in {"week", "weekend"} or isinstance(day, int) and day >= 2:
+        return _forecast_reply(weather, day)
+
+    if day == "tomorrow":
         tomorrow = weather.get("tomorrow")
         if not tomorrow:
             return Reply(text=f"Je n'ai pas de prévisions pour demain, {TITLE}.", data=weather)
@@ -214,3 +231,93 @@ def handle_weather(params: dict | None = None) -> Reply:
 
     text, speech = summarize_now(weather)
     return Reply(text=text, speech=speech, data=weather)
+
+
+def _day_name(day: dict, offset: int) -> str:
+    if offset == 0:
+        return "aujourd'hui"
+    if offset == 1:
+        return "demain"
+    try:
+        return WEEKDAYS[datetime.fromisoformat(day["time"]).weekday()]
+    except (KeyError, ValueError):
+        return f"dans {offset} jours"
+
+
+def _forecast_reply(weather: dict, day) -> Reply:
+    """Prévisions sur plusieurs jours : la semaine, le week-end, ou un jour précis."""
+    days = weather.get("days") or []
+    city = weather["city"]
+    if isinstance(day, int):
+        if day >= len(days):
+            return Reply(text=f"Mes prévisions ne vont pas au-delà de {len(days)} jours, {TITLE}.", data=weather)
+        selected = [(day, days[day])]
+    elif day == "weekend":
+        selected = [
+            (index, item) for index, item in enumerate(days)
+            if "time" in item and datetime.fromisoformat(item["time"]).weekday() >= 5
+        ][:2]
+    else:
+        selected = list(enumerate(days))
+    if not selected:
+        return Reply(text=f"Je n'ai pas de prévisions pour cette période, {TITLE}.", data=weather)
+
+    lines = [
+        f"- {_day_name(item, index).capitalize()} : {item['description']}, {item['min']} à {item['max']} °C, "
+        f"pluie {item['rain_probability']} %"
+        for index, item in selected
+    ]
+    rainy = [_day_name(item, index) for index, item in selected if item["rain_probability"] >= 60]
+    warmest = max(selected, key=lambda pair: pair[1]["max"])
+    if len(selected) == 1:
+        index, item = selected[0]
+        speech = f"{_day_name(item, index).capitalize()} à {city}, {item['description']}, {_spoken_range(item['min'], item['max'])}."
+        speech += _umbrella_advice(item)
+    else:
+        speech = f"À {city}, le plus doux sera {_day_name(warmest[1], warmest[0])}, avec {spoken_degrees(warmest[1]['max'])}."
+        speech += f" De la pluie probable {', '.join(rainy)}." if rainy else " Pas de pluie marquée en vue."
+    return Reply(text=f"Prévisions à {city}, {TITLE} :\n" + "\n".join(lines), speech=speech, data=weather)
+
+
+def handle_sun(params: dict | None = None) -> Reply:
+    """Lever et coucher du soleil (aujourd'hui, ou demain)."""
+    params = params or {}
+    try:
+        weather = get_weather(params.get("city"))
+    except WeatherError:
+        return Reply(text=f"Je ne parviens pas à joindre le service météo, {TITLE}.")
+    day = weather.get("tomorrow" if params.get("day") == "tomorrow" else "today") or {}
+    if "sunrise" not in day:
+        return Reply(text=f"Je n'ai pas les heures du soleil, {TITLE}.")
+    rise, set_ = (datetime.fromisoformat(day[key]) for key in ("sunrise", "sunset"))
+    label = "Demain" if params.get("day") == "tomorrow" else "Aujourd'hui"
+    return Reply(
+        text=f"{label} à {weather['city']} : lever du soleil à {rise:%H:%M}, coucher à {set_:%H:%M}.",
+        speech=f"{label}, le soleil se lève à {rise.hour} heures {rise.minute:02d} et se couche à {set_.hour} heures {set_.minute:02d}, {TITLE}.",
+    )
+
+
+def handle_air_quality(params: dict | None = None) -> Reply:
+    """Qualité de l'air (indice européen), avec les particules fines."""
+    params = params or {}
+    try:
+        place = _locate((params.get("city") or CITY).strip() or CITY)
+        res = requests.get(
+            AIR_QUALITY_URL,
+            params={"latitude": place["latitude"], "longitude": place["longitude"], "current": "european_aqi,pm2_5,ozone"},
+            timeout=8,
+        )
+        res.raise_for_status()
+        current = res.json().get("current") or {}
+    except Exception as exc:
+        print(f"[WEATHER] Qualité de l'air indisponible: {exc}", flush=True)
+        return Reply(text=f"Je ne parviens pas à obtenir la qualité de l'air, {TITLE}.")
+    index = current.get("european_aqi")
+    if index is None:
+        return Reply(text=f"Je n'ai pas de mesure de qualité de l'air pour {place['name']}, {TITLE}.")
+    level = next(label for limit, label in AIR_LEVELS if index <= limit)
+    advice = " Évitez l'effort physique prolongé dehors." if index > 80 else ""
+    return Reply(
+        text=f"Qualité de l'air à {place['name']} : {level} (indice européen {round(index)}, particules fines {current.get('pm2_5', '?')} µg/m³).{advice}",
+        speech=f"La qualité de l'air est {level} à {place['name']}, {TITLE}.{advice}",
+    )

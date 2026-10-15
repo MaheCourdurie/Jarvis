@@ -7,6 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+from routes import security
+from services import llm
 
 
 # Une requête relayée par Tailscale : elle vient du téléphone.
@@ -15,9 +17,9 @@ RELAYED = {"X-Forwarded-For": "100.90.121.78", "Tailscale-User-Login": "moi@exem
 
 @pytest.fixture()
 def client(monkeypatch):
-    monkeypatch.setattr(main.llm, "warm_up", lambda: None)
-    monkeypatch.setattr(main.llm, "ollama_status", lambda: (True, "ok"))
-    monkeypatch.setattr(main, "ACCESS_TOKEN", "secret-123")
+    monkeypatch.setattr(llm, "warm_up", lambda: None)
+    monkeypatch.setattr(llm, "ollama_status", lambda: (True, "ok"))
+    monkeypatch.setattr(security, "ACCESS_TOKEN", "secret-123")
     with TestClient(main.app, base_url="http://localhost") as test_client:
         yield test_client
 

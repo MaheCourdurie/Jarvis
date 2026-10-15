@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shlex
 from datetime import datetime, timedelta
+from typing import Any
 
 from config import load_contacts
 from persona import TITLE, fold as _fold, smalltalk_reply, strip_vocative
@@ -39,6 +40,14 @@ Poste et informations
 /volume 40 (ou up, down, mute, unmute)
 /search \"requête\"
 /sleep
+
+Création
+/code "ce que doit faire le programme"
+/design "sujet de la page web"
+/logo "pour qui ou pour quoi"
+/palette "ambiance ou sujet"
+/creations
+/incompris  (phrases que Jarvis n'a pas reconnues)
 /help
 """
 
@@ -141,6 +150,18 @@ def _extract_email(value: str) -> str | None:
     if not match:
         return None
     return match.group(0)
+
+
+def extract_recent_email_from_history(history: list[Any], max_messages: int = 8) -> str | None:
+    """Récupère la dernière adresse email visible dans l'historique récent."""
+    for item in reversed(history[-max_messages:]):
+        content = getattr(item, "content", None)
+        if content is None and isinstance(item, dict):
+            content = item.get("content", "")
+        email = _extract_email(str(content or ""))
+        if email:
+            return email
+    return None
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -510,6 +531,9 @@ def _extract_mail_body(text: str) -> tuple[str, bool]:
             r"(?:et|puis)\s+lui\s+dire\s+(.+)$",
             r"pour\s+(?:lui\s+)?(?:dire|annoncer|pr[ée]venir|signaler|confirmer)\s+(?:que|qu['’])\s*(.+)$",
             r"pour\s+lui\s+(?:dire|demander|proposer|rappeler)\s+(.+)$",
+            # « écris à paul@exemple.com : la réunion est annulée »
+            r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+\s*:\s*(.+)$",
+            r"\b(?:a|à)\s+[^:@]{2,40}?\s*:\s*(.+)$",
         ]
         for pattern in natural_patterns:
             match = re.search(pattern, normalized, flags=re.IGNORECASE)
@@ -650,6 +674,8 @@ def _parse_natural_timer(text: str) -> dict | None:
 
     if re.search(r"\b(?:supprime|annule|arrete|stoppe|coupe)\b", folded):
         return {"action": "delete_timers"}
+    if re.search(r"\bcombien de temps\b|\breste[- ]t[- ]il\b|\b(?:temps )?restant\b|\bou en est\b|\bquels? (?:sont )?(?:mes |les )?minuteurs\b", folded):
+        return {"action": "list_alarms"}
 
     delay = _extract_relative_delay(text)
     if delay is None:
@@ -674,7 +700,8 @@ def _parse_natural_timer(text: str) -> dict | None:
 def _parse_natural_reminder(text: str) -> dict | None:
     """Interprète un rappel (« rappelle-moi dans 20 minutes de sortir le gâteau »)."""
     lead = re.search(
-        r"\b(?:rappelle|rappelez)[- ]moi\b|\bfai(?:s|tes)[- ]moi penser\b|\bpense à me rappeler\b",
+        r"\b(?:rappelle|rappelez)[- ]moi\b|\bfai(?:s|tes)[- ]moi penser\b|\bpense à me rappeler\b"
+        r"|\b(?:pr[ée]viens|pr[ée]venez|avertis|avertissez|alerte|alertez)[- ]moi\b",
         text,
         flags=re.IGNORECASE,
     )
@@ -758,14 +785,19 @@ def _parse_natural_alarm(text: str) -> dict | None:
     if not is_create:
         return None
 
+    default_title = "Réveil" if wake_me or re.search(r"\breveils?\b", folded) else "Alarme"
+    from core import phrases
+
+    recurring = phrases.recurring_alarm(text, _extract_alarm_title(text, default=default_title))
+    if recurring is not None:
+        return recurring
+
     when = _parse_datetime_expression(text)
     if when is None:
         return {
             "action": "command_error",
             "message": f"Pour quelle heure, {TITLE} ? Par exemple : mets une alarme demain à 7 h 30.",
         }
-
-    default_title = "Réveil" if wake_me or re.search(r"\breveils?\b", folded) else "Alarme"
 
     return {
         "action": "set_alarm",
@@ -789,6 +821,7 @@ EVENT_LABELS = {
     "visio": "Visio",
     "entretien": "Entretien",
     "seance": "Séance",
+    "cours": "Cours",
 }
 _EVENT_NOUN = re.compile(r"\b(" + "|".join(re.escape(key) for key in EVENT_LABELS) + r")\b")
 
@@ -808,12 +841,26 @@ def _event_title(text: str, folded: str) -> str:
         if len(subject) >= 2:
             return _capitalize(subject)
 
+    # « Note dans mon agenda : match de foot samedi à 14h »
+    colon_match = re.search(r":\s*(.+)$", text)
+    if colon_match:
+        subject = _clean_fragment(_strip_time_expressions(colon_match.group(1)))
+        if len(subject) >= 2:
+            return _capitalize(subject)
+
     with_match = re.search(r"\bavec\s+(.+)$", text, flags=re.IGNORECASE)
     if with_match:
         person = _clean_fragment(_strip_time_expressions(with_match.group(1)))
         person = re.split(r"\s+(?:de|du|pour|pendant|durant)\s+\d", person)[0].strip()
         if len(person) >= 2:
             return f"{base or 'Rendez-vous'} avec {person}"
+
+    # « rendez-vous chez le dentiste demain à 15h »
+    at_match = re.search(r"\bchez\s+(.+)$", text, flags=re.IGNORECASE)
+    if at_match:
+        place = _clean_fragment(_strip_time_expressions(at_match.group(1)))
+        if len(place) >= 2:
+            return f"{base or 'Rendez-vous'} chez {place}"
 
     return base or "Événement"
 
@@ -876,14 +923,22 @@ def _parse_natural_calendar(text: str) -> dict | None:
             ),
         }
 
-    create_verbs = ["cree", "crée", "ajoute", "programme", "planifie", "planifier", "bloque", "bloquer", "organise", "cale"]
+    create_verbs = [
+        "cree", "crée", "ajoute", "rajoute", "programme", "planifie", "planifier", "bloque", "bloquer", "organise", "cale",
+        "mets", "met", "note", "noter", "inscris", "inscrire", "prevois", "prévois", "fixe", "reserve", "réserve",
+    ]
 
     has_create = any(re.search(rf"\b{verb}\b", lowered) for verb in create_verbs)
     has_event_term = any(token in lowered for token in event_terms) or has_event_noun
     has_block_verb = any(token in lowered for token in ["bloque", "bloquer"])
 
     if has_create and (has_event_term or has_block_verb):
+        from core import phrases
+
+        repeat = phrases.extract_repeat(folded)
         start = _parse_datetime_expression(text)
+        if repeat is not None and repeat["alarm"] != "weekly":
+            start = phrases.first_occurrence(text, repeat) or start
         if start is None:
             return {
                 "action": "command_error",
@@ -912,14 +967,11 @@ def _parse_natural_calendar(text: str) -> dict | None:
         if end is None:
             end = start + timedelta(hours=1)
 
-        return {
-            "action": "add_event",
-            "params": {
-                "title": _event_title(text, folded),
-                "start": start.isoformat(),
-                "end": end.isoformat(),
-            },
-        }
+        params = {"title": _event_title(text, folded), "start": start.isoformat(), "end": end.isoformat()}
+        if repeat is not None:
+            params["recurrence"] = repeat["rrule"]
+            params["rhythm"] = repeat["label"]
+        return {"action": "add_event", "params": params}
 
     time_tokens = ["semaine", "aujourd", "demain", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 
@@ -958,8 +1010,12 @@ def _parse_natural_calendar(text: str) -> dict | None:
         if any(token in lowered for token in ["quel", "quels", "quoi", "liste", "montre", "affiche"]):
             return {"action": "events_week"}
 
-    # « Qu'est-ce que j'ai de prévu demain ? », « j'ai quoi aujourd'hui ? »
-    if re.search(r"\bde prevu\b|\bau programme\b|\bj'ai quoi\b|\bqu'est-ce que j'ai\b|\bqu'ai-je\b", folded):
+    # « Qu'est-ce que j'ai de prévu demain ? », « j'ai quoi aujourd'hui ? », « mon programme demain »
+    if re.search(
+        r"\bde prevu\b|\bau programme\b|\bj'ai quoi\b|\bqu'est-ce que j'ai\b|\bqu'ai-je\b|\bmon programme\b"
+        r"|\bemploi du temps\b|\bj'ai (?:quelque chose|un truc|des trucs)\b|\b(?:suis[- ]je|je suis) (?:pris|occupe|dispo)\b",
+        folded,
+    ):
         if "semaine" in folded:
             return {"action": "events_week"}
         day_period = _extract_day_period_bounds(text)
@@ -1226,6 +1282,19 @@ def _parse_command(text: str) -> dict:
     if command == "/sleep":
         return {"action": "sleep_display"}
 
+    creations = {"/code": "write_code", "/design": "design_page", "/logo": "design_logo", "/palette": "design_palette"}
+    if command in creations:
+        request = " ".join(parts[1:]).strip()
+        if not request and command != "/palette":
+            return {"action": "command_error", "message": f'Format attendu:\n{command} "description"'}
+        return {"action": creations[command], "params": {"request": request}}
+
+    if command == "/creations":
+        return {"action": "list_creations"}
+
+    if command == "/incompris":
+        return {"action": "misses"}
+
     return {
         "action": "command_error",
         "message": f"Commande inconnue: {command}\n\n{COMMAND_HELP}",
@@ -1235,8 +1304,21 @@ def _parse_command(text: str) -> dict:
 _NOT_A_CITY = {"demain", "aujourd'hui", "maintenant", "moment", "semaine", "matin", "soir", "midi", "jarvis"}
 
 
+_TIME_WORDS = re.compile(
+    r"\b(?:semaine|week-?end|jours?|matin|soir|apres-midi|nuit|demain|apres-demain|aujourd'hui|maintenant"
+    r"|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|prochains?)\b"
+)
+
+
 def _extract_city(text: str) -> str | None:
     """Repère une ville dans une demande météo (« à Lyon », « sur New York », « météo Bordeaux »)."""
+    city = _extract_city_candidate(text)
+    if city and _TIME_WORDS.search(_fold(city)):
+        return None
+    return city
+
+
+def _extract_city_candidate(text: str) -> str | None:
     match = re.search(
         r"(?:\b(?:a|sur|pour|de)|à)\s+((?:[A-ZÀ-Ý][\wà-ÿ'’-]+)(?:[ -][A-ZÀ-Ý][\wà-ÿ'’-]+)*)",
         text,
@@ -1271,16 +1353,17 @@ def _parse_info(text: str) -> dict | None:
         return {"action": "date"}
 
     if re.search(
-        r"\bmeteo\b|\bquel temps (?:fait|fera|il fait|il fera)\b|\btemps qu'il (?:fait|fera)\b"
+        r"\bmeteo\b|\bquel temps\b|\btemps qu'il (?:fait|fera)\b"
         r"|\bil fait (?:combien|quelle temperature|beau|froid|chaud)\b|\btemperature (?:exterieure|dehors|qu'il fait)\b"
         r"|\bva[- ]t[- ]il pleuvoir\b|\best[- ]ce qu'il (?:va pleuvoir|pleut|pleuvra)\b|\bil pleut\b"
-        r"|\bbesoin d'un parapluie\b|\bprevisions\b",
+        r"|\bbesoin d'un parapluie\b|\bprevisions\b|\bparapluie\b|\bquelle temperature\b"
+        r"|\b(?:il )?va[- ](?:t[- ]il[- ])?(?:pleuvoir|neiger|faire (?:beau|froid|chaud))\b|\bpleuvoir\b|\bneiger?\b"
+        r"|\bfera[- ]t[- ]il (?:beau|froid|chaud)\b|\bil fera (?:beau|froid|chaud|mauvais|combien)\b",
         folded,
     ):
-        return {
-            "action": "weather",
-            "params": {"city": _extract_city(text), "day": "tomorrow" if re.search(r"\bdemain\b", folded) else "today"},
-        }
+        from core import phrases
+
+        return {"action": "weather", "params": {"city": _extract_city(text), "day": phrases.weather_day(folded)}}
 
     if re.search(
         r"\bbriefing\b|\bfai(?:s|tes)[- ](?:moi )?(?:le|un) point\b|\bpoint sur (?:la|ma) journee\b"
@@ -1295,7 +1378,11 @@ def _parse_info(text: str) -> dict | None:
 def _parse_mail_reading(text: str) -> dict | None:
     """Interprète les demandes de lecture de la messagerie."""
     folded = _fold(text)
-    has_mail = re.search(r"\b(?:mails?|emails?|e-mails?|courriers?|courriels?|messagerie|boite (?:mail|de reception))\b", folded)
+    has_mail = re.search(
+        r"\b(?:mails?|emails?|e-mails?|courriers?|courriels?|messagerie|boite (?:mail|de reception|aux lettres))\b"
+        r"|\bnouveaux messages\b|\bmessages non lus\b|\bqui m'a ecrit\b",
+        folded,
+    )
     if not has_mail:
         return None
     # Supprimer, archiver ou répondre n'est pas lire : ces demandes ne sont pas prises en charge.
@@ -1305,8 +1392,9 @@ def _parse_mail_reading(text: str) -> dict | None:
     if re.search(r"\b(?:dernier|derniere|latest|plus recent)\b", folded):
         return {"action": "mail_last"}
     if re.search(
-        r"\b(?:resume|lis|lire|consulte|verifie|regarde|check|montre|affiche|non lus?|nouveaux?|recu|releve)\b"
-        r"|\bai[- ]je\b|\best[- ]ce que j'ai\b|\bj'ai des\b|\bquoi de neuf\b",
+        r"\b(?:resume|lis|lire|consulte|consulter|verifie|verifier|regarde|regarder|check|checker|montre|montrer"
+        r"|affiche|afficher|non lus?|nouveaux?|recu|releve)\b"
+        r"|\bai[- ]je\b|\best[- ]ce que j'ai\b|\bj'ai des\b|\bquoi de neuf\b|\bqui m'a ecrit\b",
         folded,
     ):
         return {"action": "mail_resume"}
@@ -1331,7 +1419,7 @@ _WEB_TOPICS = re.compile(
     r"|\bprix (?:de|du|d'un|d'une|des)\b|\bcombien (?:ca )?coute\b|\btarifs?\b"
     r"|\bcours (?:de l'action|du bitcoin|de l'euro|du dollar|de bourse|de l'or)\b|\btaux de change\b"
     r"|\bnumero de telephone\b|\badresse (?:de|du|des|d'un|d'une)\b"
-    r"|\bdate de sortie\b|\bquand sort\b|\btrafic\b|\bbouchons\b|\bgreves?\b"
+    r"|\bdate de sortie\b|\bquand (?:sort|sortira|sortent)\b|\bprochaine sortie\b|\btrafic\b|\bbouchons\b|\bgreves?\b"
     r"|\b(?:restaurant|resto|boulangerie|pharmacie|medecin|dentiste|garage|supermarche|magasin|coiffeur)s? "
     r"(?:ouverte?s?|pres|proche|a proximite|dans le coin|autour|a cote)\b"
     r"|\bmeilleure?s? (?:restaurant|resto|bar|pizzeria|boulangerie|coiffeur|garage|medecin|dentiste)s?\b"
@@ -1353,6 +1441,9 @@ def _parse_web_question(text: str) -> dict | None:
         video = re.search(r"\s+(?:sur|dans)\s+youtube$", query, flags=re.IGNORECASE)
         if video:
             return {"action": "web_search", "params": {"query": query[: video.start()].strip(), "engine": "youtube"}}
+        video = re.match(r"(?:sur|dans)\s+youtube\s+(.+)$", query, flags=re.IGNORECASE)
+        if video:
+            return {"action": "web_search", "params": {"query": video.group(1).strip(), "engine": "youtube"}}
         query = re.sub(r"\s+(?:sur|dans)\s+(?:google|internet|le web|le net|wikip[ée]dia)$", "", query, flags=re.IGNORECASE).strip()
         if query:
             return {"action": "web_answer", "params": {"query": query}}
@@ -1442,6 +1533,80 @@ _NO = re.compile(
 )
 
 
+# ── Création : code et design ──────────────────────────────────────────────
+
+_CREATE_VERB = (
+    r"(?:cree|creer|crees|fais|fait|faire|fabrique|fabriquer|ecris|ecrire|code|coder|codes|genere|generer"
+    r"|developpe|developper|dessine|dessiner|concois|concevoir|imagine|imaginer|propose|proposer|realise|realiser"
+    r"|prepare|preparer|construis|construire|compose|composer|monte|monter|programme|programmer|redige|rediger)"
+)
+_CODE_NOUN = r"(?:script|programme|code|fonction|bot|algorithme|appli|application|app|jeu|outil|extension|calculatrice)"
+_PAGE_NOUN = r"(?:site(?: web| internet| vitrine)?|page(?: web| d'accueil| html| internet)?|landing(?: page)?|maquette|portfolio|template|mockup)"
+_LOGO_NOUN = r"(?:logo|logotype|icone|embleme)"
+_PALETTE_NOUN = r"(?:palette|nuancier|gamme de couleurs|couleurs (?:pour|qui))"
+_DOCUMENT_NOUN = (
+    r"(?:lettre|cv|curriculum(?: vitae)?|compte[- ]rendu|attestation|courrier|discours|dissertation|expose|rapport"
+    r"|devis|facture|contrat|proces[- ]verbal|note de synthese)"
+)
+_CODE_LANGUAGE = re.compile(
+    r"\ben (python|javascript|js|typescript|bash|shell|zsh|swift|rust|go|golang|java|kotlin|php|ruby|sql|lua|applescript|c\+\+|c#|c)\b"
+    r"|\b(python|javascript|typescript|bash|swift|rust|kotlin|php|ruby|applescript)\b"
+)
+# « programme » au sens d'emploi du temps ou d'entraînement : ce n'est pas du code.
+_NOT_CODE = re.compile(r"\bprogramme (?:d'entrainement|de (?:revision|musculation|la journee|la semaine|course)|du jour|sportif|tele|tv)\b")
+_CREATION_TARGET = r"(?:script|programme|code|page|site|logo|palette|maquette|creation|design|jeu|appli|application)"
+_REVISE_VERB = (
+    r"(?:modifie|modifier|change|changer|ameliore|ameliorer|corrige|corriger|ajoute|ajouter|rajoute|retire|enleve"
+    r"|supprime|mets|met|rends|agrandis|reduis|remplace|refais|refaire|retouche|peaufine|traduis|simplifie|optimise)"
+)
+
+
+def _creation_request(verb: str, noun: str, folded: str) -> bool:
+    return re.search(rf"\b{verb}\b(?:[- ]moi| moi)?(?:\s+\S+){{0,5}}?\s+{noun}s?\b", folded) is not None
+
+
+def _parse_creation(text: str) -> dict | None:
+    """Commandes à l'atelier : programmes, pages, logos, palettes, et retouches de la dernière création."""
+    folded = _fold(text).strip(" .!?")
+    request = text.strip().strip(".!?").strip()
+
+    # Rouvrir, lister, suivre les créations.
+    if re.search(rf"\b(?:ouvre|montre|affiche|rouvre)(?:[- ]moi)? (?:ma|la|mon|le) dernier(?:e)? {_CREATION_TARGET}\b", folded):
+        return {"action": "open_creation"}
+    if re.search(r"\b(?:mes|les) creations\b|\bmon atelier\b|\bou en est (?:la creation|le script|la page|le logo|la palette|le programme)\b", folded):
+        return {"action": "list_creations"}
+
+    # Retouches : « ajoute un bouton de contact à la page », « corrige-le », « change les couleurs du logo ».
+    target = rf"(?:le|la|ce|cette|mon|ma|du|de la|au|a la|sur la|sur le|dans le|dans la|a ce|a cette)\s+{_CREATION_TARGET}\b"
+    if re.search(rf"\b{_REVISE_VERB}\b.*\b{target}", folded) or re.match(
+        r"^(?:modifie|ameliore|corrige|refais|retouche|peaufine|simplifie|optimise)[- ](?:le|la)\b", folded
+    ):
+        if not re.search(rf"\b{_CREATE_VERB}(?:[- ]moi)? (?:un|une|des)\b", folded):
+            return {"action": "revise_creation", "params": {"request": request}}
+
+    if re.search(r"\b(?:reviens|retourne|remets|revenir|reprends)\b.*\bversion (?:precedente|d'avant|anterieure)\b|\bannule (?:la |les )?(?:derniere )?(?:modification|retouche)s?\b", folded):
+        return {"action": "previous_version"}
+
+    if _creation_request(_CREATE_VERB, _DOCUMENT_NOUN, folded):
+        return {"action": "write_document", "params": {"request": request}}
+
+    if _creation_request(_CREATE_VERB, _LOGO_NOUN, folded):
+        return {"action": "design_logo", "params": {"request": request}}
+    if _creation_request(_CREATE_VERB, _PALETTE_NOUN, folded):
+        return {"action": "design_palette", "params": {"request": request}}
+
+    language = _CODE_LANGUAGE.search(folded)
+    wants_code = _creation_request(_CREATE_VERB, _CODE_NOUN, folded) and not _NOT_CODE.search(folded)
+    if _creation_request(_CREATE_VERB, _PAGE_NOUN, folded) and not wants_code:
+        return {"action": "design_page", "params": {"request": request}}
+    if wants_code or (language and re.search(rf"\b{_CREATE_VERB}\b", folded)):
+        params = {"request": request}
+        if language:
+            params["language"] = language.group(1) or language.group(2)
+        return {"action": "write_code", "params": params}
+    return None
+
+
 def classify_confirmation(text: str) -> str | None:
     """Interprète la réponse à une demande de confirmation : "yes", "no" ou None."""
     folded = _fold(strip_vocative(text)).strip(" .!?,")
@@ -1469,14 +1634,34 @@ def detect_action(text: str, fallback_email: str | None = None) -> dict | None:
     # « Jarvis, ouvre Safari » → « ouvre Safari »
     stripped = strip_vocative(stripped) or stripped
 
+    from core import phrases
+
+    # L'ordre compte : une phrase revient au premier parseur qui la reconnaît.
     parsers = (
         lambda: _parse_natural_send_mail(stripped, fallback_email=fallback_email),
+        lambda: _parse_creation(stripped),
+        lambda: phrases.parse_mail_more(stripped),
+        lambda: phrases.parse_snooze(stripped),
+        lambda: phrases.parse_poste(stripped),
         lambda: _parse_natural_timer(stripped),
         lambda: _parse_natural_reminder(stripped),
         lambda: _parse_natural_alarm(stripped),
+        lambda: phrases.parse_move_event(stripped),
         lambda: _parse_natural_calendar(stripped),
+        lambda: phrases.parse_notes(stripped),
         lambda: _parse_mail_reading(stripped),
+        lambda: phrases.parse_memory(stripped),
+        lambda: phrases.parse_routines(stripped),
+        lambda: phrases.parse_sky(stripped),
         lambda: _parse_info(stripped),
+        lambda: phrases.parse_translate(stripped),
+        lambda: phrases.parse_travel(stripped),
+        lambda: phrases.parse_files(stripped),
+        lambda: phrases.parse_vision(stripped),
+        lambda: phrases.parse_music(stripped),
+        lambda: phrases.parse_home(stripped),
+        lambda: phrases.parse_summarize_url(stripped),
+        lambda: phrases.parse_encyclopedia(stripped),
         lambda: _parse_web_question(stripped),
         lambda: _parse_system(stripped),
     )

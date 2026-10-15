@@ -97,7 +97,7 @@ setup_voice() {
   fi
 
   echo "[voice] Préparation de la reconnaissance vocale (téléchargement au premier lancement)"
-  (cd "$API_DIR" && python -c "import voice; voice.prepare_stt()") \
+  (cd "$API_DIR" && python -c "from services import voice; voice.prepare_stt()") \
     || echo "[voice] Reconnaissance locale indisponible: Jarvis utilisera celle du navigateur."
 }
 

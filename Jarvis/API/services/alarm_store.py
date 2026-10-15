@@ -4,9 +4,11 @@ import json
 import os
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from config import API_DIR
 
 
 class AlarmStore:
@@ -23,7 +25,7 @@ class AlarmStore:
         """Construit le store d'alarmes depuis la configuration d'environnement."""
         raw = os.getenv(
             "ALARMS_FILE",
-            str(Path(__file__).resolve().parent / ".alarms.json"),
+            str(API_DIR / ".alarms.json"),
         )
         return cls(Path(raw).expanduser(), timezone_name)
 
@@ -56,8 +58,13 @@ class AlarmStore:
             value = value.replace(tzinfo=self.timezone)
         return value.astimezone(self.timezone)
 
-    def create_alarm(self, when: datetime, label: str) -> dict:
-        """Crée et persiste une nouvelle alarme."""
+    def create_alarm(self, when: datetime, label: str, repeat: str | None = None) -> dict:
+        """Crée et persiste une nouvelle alarme.
+
+        repeat : "daily" (tous les jours), "weekdays" (du lundi au vendredi) ou
+        "weekly:0,3" (jours de la semaine, lundi = 0). Une alarme récurrente se
+        reprogramme d'elle-même à chaque déclenchement.
+        """
         when_local = self._normalize_datetime(when)
         now = datetime.now(self.timezone)
 
@@ -69,6 +76,8 @@ class AlarmStore:
             "triggered": False,
             "triggered_at": None,
         }
+        if repeat:
+            alarm["repeat"] = repeat
 
         with self._lock:
             items = self._read_items()
@@ -229,8 +238,50 @@ class AlarmStore:
                     item["triggered_at"] = now.isoformat()
                     triggered.append(item)
                     changed = True
+                    if item.get("repeat"):
+                        following = next_occurrence(when_dt, item["repeat"], now)
+                        if following is not None:
+                            items.append(
+                                {
+                                    **{k: v for k, v in item.items() if k not in {"triggered", "triggered_at"}},
+                                    "id": uuid.uuid4().hex[:8],
+                                    "when": following.isoformat(),
+                                    "triggered": False,
+                                    "triggered_at": None,
+                                }
+                            )
 
             if changed:
+                items.sort(key=lambda entry: entry.get("when", ""))
                 self._write_items(items)
 
         return triggered
+    def last_triggered(self) -> dict | None:
+        """La dernière alarme qui a sonné (pour « encore 5 minutes »)."""
+        with self._lock:
+            rung = [item for item in self._read_items() if item.get("triggered_at")]
+        return max(rung, key=lambda item: item["triggered_at"]) if rung else None
+
+
+def repeat_days(repeat: str) -> set[int]:
+    """Jours concernés par une répétition (lundi = 0)."""
+    if repeat == "daily":
+        return set(range(7))
+    if repeat == "weekdays":
+        return set(range(5))
+    if repeat.startswith("weekly:"):
+        return {int(day) for day in repeat[7:].split(",") if day.strip().isdigit() and int(day) < 7}
+    return set()
+
+
+def next_occurrence(when: datetime, repeat: str, after: datetime) -> datetime | None:
+    """Prochaine échéance d'une alarme récurrente, strictement après « after »."""
+    days = repeat_days(repeat)
+    if not days:
+        return None
+    candidate = when
+    for _ in range(400):
+        if candidate > after and candidate.weekday() in days:
+            return candidate
+        candidate += timedelta(days=1)
+    return None

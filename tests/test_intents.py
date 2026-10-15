@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import intents
+from core import intents
 
 
 def action(text, **kwargs):
@@ -66,7 +66,6 @@ def test_router_recognises_actions(text, expected):
         "Rédige un message d'anniversaire pour ma mère",
         "Décris-moi ce message",
         "J'ai le temps de faire une sieste ?",
-        "Supprime mon dernier mail",
         "Aide-moi à comprendre les fractions",
     ],
 )
