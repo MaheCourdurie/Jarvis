@@ -168,8 +168,10 @@ Jarvis dirige maintenant 6 contrôleurs et 20 agents (voir « Organisation de l'
 ### À faire
 
 - [ ] **Configurer Google (jamais fait)** : sur [Google Cloud Console](https://console.cloud.google.com/), créer un projet, activer les API Gmail et Google Calendar, créer un identifiant OAuth « Application de bureau », télécharger le JSON dans `Jarvis/API/`, mettre son nom dans `.env` (`GOOGLE_CLIENT_SECRET_FILE=…`), puis connecter le compte depuis le panneau « Liaisons » du HUD (détails : section « Configuration Google » du README)
-- [ ] Redémarrer le bot Telegram, qui tourne avec l'ancien code : `launchctl kickstart -k gui/$(id -u)/fr.jarvis.telegram`
-- [ ] Faire le ménage : supprimer dans l'app Raccourcis les 2 anciens « Ne pas déranger » en double (les plus anciens, qui ne marchent pas) et la note de test « Jarvis peut maintenant écrire dans Notes »
+- [ ] Supprimer dans Notes la note de test « Jarvis peut maintenant écrire dans Notes »
+- [x] Bot Telegram redémarré avec le nouveau code
+- [x] Anciens raccourcis « Ne pas déranger » en double supprimés
+- [x] Ce dépôt pousse avec la clé du compte MaheCourdurie (`core.sshCommand` dans `.git/config`)
 - [x] Autorisations macOS pour Python : Accessibilité, Enregistrement de l'écran, Automatisation (Notes, Rappels, mode sombre)
 - [x] Raccourcis « Activer / Désactiver Ne pas déranger » (macOS en anglais : le mode s'appelle « Do Not Disturb »)
 - [x] `blueutil` installé
