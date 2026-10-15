@@ -461,3 +461,88 @@ def test_design_phrases_are_understood(phrase, action, params):
 
 def test_ordinals_alone_are_not_mistaken():
     assert detect_action("La deuxième guerre mondiale") is None
+
+
+# ── Routines à heure fixe ──────────────────────────────────────────────────
+
+@pytest.fixture()
+def planner(tmp_path):
+    from agents.routines import RoutineAgent
+
+    agent = RoutineAgent(main.context, path=tmp_path / "routines.json", schedule_path=tmp_path / "routines-horaires.json")
+    ran = []
+    agent.dispatch = lambda step, remote: ran.append(step) or {"reply": "Fait.", "action": "ok"}
+    agent.ran = ran
+    return agent
+
+
+def test_routine_is_scheduled_and_runs_once_a_day(planner):
+    reply = planner.run(*_action("Lance la routine bonne nuit tous les soirs à 22h"))
+    assert reply.text == "Entendu, Monsieur : la routine « bonne nuit » se lancera tous les jours à 22 h 00."
+
+    evening = datetime(2026, 10, 15, 22, 0, 30)
+    assert planner.due(evening - timedelta(minutes=1)) == []
+    assert planner.due(evening) == ["bonne nuit"]
+    assert planner.due(evening + timedelta(minutes=2)) == []  # une fois par jour
+    assert planner.due(evening + timedelta(days=1)) == ["bonne nuit"]
+    # Jarvis éteint à l'heure dite : la routine ne part pas des heures après.
+    assert planner.due(evening + timedelta(days=2, hours=1)) == []
+    assert planner.soon(evening + timedelta(days=3) - timedelta(minutes=30)) is True
+    assert "À heure fixe :\n- bonne nuit : tous les jours à 22 h 00" in planner.run("list_routines", {}).text
+
+
+def test_weekday_routine_skips_the_weekend(planner):
+    planner.run(*_action("Programme le mode travail en semaine à 9h"))
+    saturday, monday = datetime(2026, 10, 17, 9, 1), datetime(2026, 10, 19, 9, 1)
+    assert planner.due(saturday) == [] and planner.due(monday) == ["travail"]
+
+
+def test_scheduled_routine_can_be_cancelled(planner):
+    planner.run(*_action("Lance la routine matin chaque matin à 7 heures"))
+    assert "ne se lancera plus" in planner.run(*_action("Ne lance plus la routine matin automatiquement")).text
+    assert planner.schedules() == []
+
+
+def test_unknown_routine_is_not_scheduled(planner):
+    assert "Je ne connais pas cette routine" in planner.run("schedule_routine", {"name": "sieste", "time": "14:00", "repeat": "daily"}).text
+
+
+def _action(phrase):
+    detected = detect_action(phrase)
+    return detected["action"], detected.get("params") or {}
+
+
+def test_every_morning_is_understood_for_alarms_too():
+    params = detect_action("Réveille-moi tous les matins à 7h")["params"]
+    assert params["repeat"] == "daily" and params["when"].endswith("07:00:00")
+
+
+# ── Vision : décrire une image du Mac ──────────────────────────────────────
+
+def test_an_image_is_described(monkeypatch, tmp_path):
+    from agents import vision
+
+    photo = tmp_path / "plage.jpg"
+    photo.write_bytes(b"\xff\xd8\xff fausse image")
+    monkeypatch.setattr(files, "find", lambda query, limit=8: [tmp_path / "notes.txt", photo])
+    seen = []
+    monkeypatch.setattr(llm, "complete", lambda system, prompt, *a, images=None, **k: seen.append(images) or "Une plage au coucher du soleil.")
+    reply = main.jarvis.run({"action": "look_image", "params": {"query": "plage", "question": "Décris la photo plage"}})
+    assert reply.spoken == "Une plage au coucher du soleil." and reply.text.startswith("plage.jpg")
+    assert seen and seen[0][0]
+
+    monkeypatch.setattr(files, "find", lambda query, limit=8: [])
+    assert "aucune image nommée « absente »" in main.jarvis.run({"action": "look_image", "params": {"query": "absente"}}).text
+    assert vision.IMAGE_SUFFIXES >= {".jpg", ".png", ".heic"}
+
+
+@pytest.mark.parametrize("phrase,action", [
+    ("Décris la photo plage.jpg", "look_image"),
+    ("Qu'est-ce qu'il y a sur l'image chat.png ?", "look_image"),
+    ("Décris la capture d'écran", "look_screen"),
+    ("Fais une capture d'écran", "screenshot"),
+    ("Où acheter l'iPhone 16 le moins cher ?", "web_answer"),
+    ("Compare les prix de la PS5", "web_answer"),
+])
+def test_vision_and_prices_are_understood(phrase, action):
+    assert detect_action(phrase)["action"] == action

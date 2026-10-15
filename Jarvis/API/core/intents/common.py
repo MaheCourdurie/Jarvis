@@ -383,7 +383,7 @@ def extract_repeat(folded: str) -> dict | None:
     # « tous les jours de semaine » avant « tous les jours ».
     if re.search(r"\ben semaine\b|\bdu lundi au vendredi\b|\bjours? (?:de (?:la )?semaine|ouvres?)\b", folded):
         return {"alarm": "weekdays", "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "label": "du lundi au vendredi"}
-    if re.search(r"\btous les jours\b|\bchaque jour\b|\bquotidien", folded):
+    if re.search(r"\btous les (?:jours|soirs|matins)\b|\bchaque (?:jour|soir|matin)\b|\bquotidien", folded):
         return {"alarm": "daily", "rrule": "FREQ=DAILY", "label": "tous les jours"}
     days_match = re.search(rf"\b(?:tous les|chaque)\s+({DAY}s?(?:\s*(?:,|et)\s*{DAY}s?)*)", folded)
     if days_match:

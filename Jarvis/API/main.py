@@ -64,10 +64,11 @@ _on_demand = False
 
 
 def _keeps_awake() -> bool:
-    """Une alarme en attente ou un rendez-vous proche à annoncer : Jarvis reste allumé."""
+    """Une alarme en attente, un rendez-vous ou une routine programmée qui approche : Jarvis reste allumé."""
+    now = datetime.now(context.timezone)
     watcher = getattr(jarvis.routes.get("add_event"), "watcher", None)
-    soon = watcher is not None and watcher.soon(datetime.now(context.timezone))
-    return bool(context.alarms.list_alarms()) or soon
+    meeting = watcher is not None and watcher.soon(now)
+    return bool(context.alarms.list_alarms()) or meeting or routines.routines.soon(now.replace(tzinfo=None))
 
 
 def _go_to_sleep() -> None:

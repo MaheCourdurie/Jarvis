@@ -114,7 +114,7 @@ def parse_poste(text: str) -> dict | None:
         return {"action": "dark_mode", "params": {"on": wanted}}
     if re.search(r"\bverrouille[rz]?\b|\bbloque (?:le |mon )?(?:mac|ordi|ordinateur|session|ecran)\b", folded):
         return {"action": "lock_screen"}
-    if re.search(r"\bcapture d'ecran\b|\bscreenshot\b|\bfais une capture\b", folded):
+    if re.search(r"\bcapture d'ecran\b|\bscreenshot\b|\bfais une capture\b", folded) and not re.match(r"^(?:decris|regarde|analyse|lis)\b", folded):
         return {"action": "screenshot"}
     if re.search(r"\bwi-?fi\b", folded):
         return {"action": "wifi", "params": {"on": _on_off(folded)}}

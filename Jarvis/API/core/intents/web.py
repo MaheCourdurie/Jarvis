@@ -24,6 +24,7 @@ _WEB_TOPICS = re.compile(
     r"|\bactualites?\b|\bactus?\b|\bnews\b|\bdernieres nouvelles\b"
     r"|\bresultats? (?:du|de la|des|d'un|d'une)\b|\bscore (?:du|de|des)\b|\bqui a gagne\b|\bclassement (?:de|du|des)\b"
     r"|\bprix (?:de|du|d'un|d'une|des)\b|\bcombien (?:ca )?coute\b|\btarifs?\b"
+    r"|\b(?:le |la )?moins cher(?:e|es|s)?\b|\bmeilleur prix\b|\bcompar(?:e|er|ez|aison)(?: les| des)? prix\b|\bbon plan\b|\ben promo(?:tion)?\b"
     r"|\bcours (?:de l'action|du bitcoin|de l'euro|du dollar|de bourse|de l'or)\b|\btaux de change\b"
     r"|\bnumero de telephone\b|\badresse (?:de|du|des|d'un|d'une)\b"
     r"|\bdate de sortie\b|\bquand (?:sort|sortira|sortent)\b|\bprochaine sortie\b|\btrafic\b|\bbouchons\b|\bgreves?\b"

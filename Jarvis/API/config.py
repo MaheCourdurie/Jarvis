@@ -176,6 +176,8 @@ MISSES_FILE = Path(env_str("JARVIS_MISSES_FILE", str(API_DIR / ".incompris.jsonl
 HOME_ADDRESS = env_str("JARVIS_HOME_ADDRESS", "")
 # Routines (« mode travail ») : des listes de phrases que Jarvis exécute à la suite.
 ROUTINES_FILE = Path(env_str("JARVIS_ROUTINES_FILE", str(API_DIR / "routines.json"))).expanduser()
+# Routines à heure fixe (« la routine bonne nuit tous les soirs à 22h »), à côté des routines.
+ROUTINE_SCHEDULE_FILE = ROUTINES_FILE.with_name(ROUTINES_FILE.stem + "-horaires.json")
 
 # ── Carnet d'adresses (nom → email) pour dicter un destinataire à la voix ──
 CONTACTS_FILE = Path(env_str("JARVIS_CONTACTS_FILE", str(API_DIR / "contacts.json"))).expanduser()
