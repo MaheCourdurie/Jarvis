@@ -7,6 +7,28 @@ import re
 from persona import fold
 
 
+WEB_ONLY_SITES = {
+    "youtube": "https://www.youtube.com",
+    "wikipedia": "https://fr.wikipedia.org",
+    "gmail": "https://mail.google.com",
+    "google": "https://www.google.com",
+    "google maps": "https://maps.google.com",
+    "maps google": "https://maps.google.com",
+    "google drive": "https://drive.google.com",
+    "google agenda": "https://calendar.google.com",
+    "netflix": "https://www.netflix.com",
+    "amazon": "https://www.amazon.fr",
+    "leboncoin": "https://www.leboncoin.fr",
+    "le bon coin": "https://www.leboncoin.fr",
+    "linkedin": "https://www.linkedin.com",
+    "instagram": "https://www.instagram.com",
+    "facebook": "https://www.facebook.com",
+    "github": "https://github.com",
+    "twitch": "https://www.twitch.tv",
+    "reddit": "https://www.reddit.com",
+}
+
+
 def parse_system(text: str) -> dict | None:
     """Interprète les demandes de pilotage du poste : diagnostic, volume, applications, web, veille."""
     folded = fold(text).strip(" .!?")
@@ -65,6 +87,10 @@ def parse_system(text: str) -> dict | None:
         site = re.sub(r"^(?:le\s+site\s+(?:de\s+|d')?|la\s+page\s+(?:de\s+|d')?)", "", target, flags=re.IGNORECASE)
         if re.fullmatch(r"(?:https?://)?[\w-]+(?:\.[\w-]+)+(?:/\S*)?", site):
             return {"action": "open_url", "params": {"url": site}}
+        # Des sites sans application sur le Mac : « ouvre YouTube » ouvre le site.
+        known = WEB_ONLY_SITES.get(fold(site).strip(" .!?"))
+        if known:
+            return {"action": "open_url", "params": {"url": known}}
         return {"action": "open_app", "params": {"name": target}}
 
     closing = re.match(r"^(?:ferme|fermer|fermez|quitte|quitter|quittez)\s+(.+)$", cleaned, flags=re.IGNORECASE)

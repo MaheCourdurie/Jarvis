@@ -39,6 +39,20 @@ EVENT_LABELS = {
 _EVENT_NOUN = re.compile(r"\b(" + "|".join(re.escape(key) for key in EVENT_LABELS) + r")\b")
 
 
+def _event_subject(raw: str) -> str:
+    """Le sujet d'un événement, sans l'heure ni les mots de liaison (« parler du budget » → « budget »)."""
+    subject = clean_fragment(strip_time_expressions(raw))
+    subject = re.sub(
+        r"^(?:(?:parler|discuter|causer|echanger|échanger)\s+(?:de\s+|du\s+|des\s+|d')|faire le point\s+(?:sur|de)\s+)",
+        "", subject, flags=re.IGNORECASE,
+    )
+    subject = re.sub(r"^(?:le|la|les|l'|un|une|du|de la|des|mon|ma|mes|notre|nos)\s*(?=\S)", "", subject, flags=re.IGNORECASE)
+    # Une durée (« pendant 2 heures », « pour 30 minutes ») n'est pas un sujet.
+    if re.fullmatch(r"\d+\s*(?:h|heures?|min|minutes?)", subject, flags=re.IGNORECASE):
+        return ""
+    return clean_fragment(subject)
+
+
 def _event_title(text: str, folded: str) -> str:
     """Déduit le titre d'un événement : guillemets, « pour … », puis « <type> avec <personne> »."""
     quoted = re.findall(r'"([^\"]+)"', text)
@@ -48,11 +62,16 @@ def _event_title(text: str, folded: str) -> str:
     noun = _EVENT_NOUN.search(folded)
     base = EVENT_LABELS[noun.group(1)] if noun else ""
 
-    subject_match = re.search(r"\b(?:pour|concernant|au sujet de)\b\s+(.+)$", text, flags=re.IGNORECASE)
+    subject_match = re.search(r"\b(?:pour|concernant|au sujet de|a propos de|à propos de)\b\s+(.+)$", text, flags=re.IGNORECASE)
     if subject_match:
-        subject = clean_fragment(strip_time_expressions(subject_match.group(1)))
+        subject = _event_subject(subject_match.group(1))
         if len(subject) >= 2:
-            return capitalize(subject)
+            # « Réunion demain pour le budget » → « Réunion : budget » (et non « Le budget »).
+            if not base or fold(subject).startswith(fold(base)):
+                return capitalize(subject)
+            person = re.search(r"\bavec\s+(.+?)\s+(?:pour|concernant|au sujet de|a propos de|à propos de)\b", text, flags=re.IGNORECASE)
+            who = f" avec {clean_fragment(strip_time_expressions(person.group(1)))}" if person else ""
+            return f"{base}{who} : {subject}"
 
     # « Note dans mon agenda : match de foot samedi à 14h »
     colon_match = re.search(r":\s*(.+)$", text)
@@ -146,15 +165,20 @@ def parse_calendar(text: str) -> dict | None:
     has_block_verb = any(token in lowered for token in ["bloque", "bloquer"])
 
     if has_create and (has_event_term or has_block_verb):
-
         repeat = extract_repeat(folded)
         start = parse_datetime_expression(text)
         if repeat is not None and repeat["alarm"] != "weekly":
             start = first_occurrence(text, repeat) or start
         if start is None:
+            # Le jour est dit (« demain »), l'heure manque : on ne redemande que l'heure.
+            day_known = extract_day_period_bounds(text) is not None
             return {
                 "action": "command_error",
-                "message": f"Pour quand, {TITLE} ? Par exemple : crée un événement lundi prochain à 10 h.",
+                "message": (
+                    f"À quelle heure, {TITLE} ? Par exemple : « {text.strip().rstrip('.!?')} à 10 h »."
+                    if day_known
+                    else f"Pour quand, {TITLE} ? Par exemple : crée un événement lundi prochain à 10 h."
+                ),
             }
 
         end = None

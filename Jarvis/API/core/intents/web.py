@@ -62,14 +62,29 @@ def parse_web_question(text: str) -> dict | None:
     return None
 
 
+_WIKI_VERB = r"(?:ouvre|ouvrir|cherche|montre|affiche|va sur|lance)(?:[- ]moi)?"
+_WIKI_PATTERNS = (
+    # « Ouvre la page Wikipédia sur Napoléon », « ouvre l'article wikipedia de Marie Curie »
+    re.compile(
+        rf"^{_WIKI_VERB}\s+(?:la page\s+|l'article\s+|la fiche\s+)?(?:de\s+|d'|sur\s+)?wikip[ée]dia\s+"
+        r"(?:(?:sur|de|du|des|d'|pour|concernant|à propos de|a propos de|(?:à|a) la page|(?:à|a) l'article)\s*)?(?P<q>.+)$",
+        flags=re.IGNORECASE,
+    ),
+    # « Ouvre Napoléon sur Wikipédia », « montre-moi la page de Napoléon sur wikipedia »
+    re.compile(
+        rf"^{_WIKI_VERB}\s+(?:la page\s+(?:de\s+|d')?|l'article\s+(?:sur\s+|de\s+)?)?(?P<q>.+?)\s+(?:sur|dans)\s+wikip[ée]dia$",
+        flags=re.IGNORECASE,
+    ),
+)
+
+
 def parse_encyclopedia(text: str) -> dict | None:
-    match = re.match(
-        r"^(?:ouvre|cherche|montre)(?:[- ]moi)?\s+(?:la page\s+)?(?:de\s+|d')?wikip[ée]dia\s+(?:sur|de|du|des|pour|concernant|à propos de)\s+(?P<q>.+)$",
-        text.strip().rstrip(" .!?"), flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-    return {"action": "web_search", "params": {"query": clean_name(match["q"]), "engine": "wikipedia"}}
+    clean = text.strip().rstrip(" .!?").replace("’", "'")
+    for pattern in _WIKI_PATTERNS:
+        match = pattern.match(clean)
+        if match and clean_name(match["q"]):
+            return {"action": "web_search", "params": {"query": clean_name(match["q"]), "engine": "wikipedia"}}
+    return None
 
 
 def parse_summarize_url(text: str) -> dict | None:
