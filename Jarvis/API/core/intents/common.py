@@ -37,9 +37,67 @@ NUMBER_WORDS = {
 }
 
 
+def _number_spellings() -> dict[str, int]:
+    """Les nombres de 0 à 100 tels qu'on les écrit en lettres (« vingt et un », « quatre-vingt-dix »)."""
+    units = [
+        "zero", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
+        "onze", "douze", "treize", "quatorze", "quinze", "seize",
+    ]
+    names = {word: value for value, word in enumerate(units)}
+    names.update({"une": 1, "zéro": 0, "dix-sept": 17, "dix-huit": 18, "dix-neuf": 19, "cent": 100})
+    tens = {20: "vingt", 30: "trente", 40: "quarante", 50: "cinquante", 60: "soixante"}
+    for base, word in tens.items():
+        names[word] = base
+        for unit in range(1, 10):
+            names[f"{word}-et-un" if unit == 1 else f"{word}-{units[unit]}"] = base + unit
+    for unit in range(10, 20):  # soixante-dix à soixante-dix-neuf, quatre-vingt-dix…
+        spelled = units[unit] if unit <= 16 else f"dix-{units[unit - 10]}"
+        names["soixante-et-onze" if unit == 11 else f"soixante-{spelled}"] = 60 + unit
+        names[f"quatre-vingt-{spelled}"] = 80 + unit
+    names["quatre-vingts"] = names["quatre-vingt"] = 80
+    for unit in range(1, 10):
+        names[f"quatre-vingt-{units[unit]}"] = 80 + unit
+    names.update({word + "e": value for word, value in list(names.items()) if word.endswith("-et-un")})  # « vingt et une heures »
+    spellings = {}
+    for word, value in names.items():
+        for variant in {word, word.replace("-", " "), word.replace("-et-", " et ")}:
+            spellings[variant] = value
+    return spellings
+
+
+NUMBER_SPELLINGS = _number_spellings()
+_NUMBER = r"(?:" + "|".join(re.escape(word) for word in sorted(NUMBER_SPELLINGS, key=len, reverse=True)) + r")"
+_UNIT_AFTER = r"(?=\s*(?:heures?|h\b|minutes?\b|mn\b|min\b|secondes?\b|sec\b|jours?\b|pour ?cent\b|%))"
+
+
+def spoken_numbers(text: str) -> str:
+    """Les nombres dits en lettres devant une unité passent en chiffres (« sept heures trente » → « 7 heures 30 »).
+
+    Seuls les nombres qui comptent (heures, minutes, durées, pourcentages, réglages) sont convertis :
+    « la réunion des deux équipes » reste telle quelle.
+    """
+    def digits(match: re.Match) -> str:
+        return str(NUMBER_SPELLINGS[match.group(0).lower()])
+
+    converted = re.sub(rf"(?<![\w-]){_NUMBER}(?![\w-]){_UNIT_AFTER}", digits, text, flags=re.IGNORECASE)
+    # Les minutes après l'heure : « 7 heures trente », « 7h quinze ».
+    converted = re.sub(
+        rf"(\d\s*(?:heures?|h))\s+({_NUMBER})(?![\w-])",
+        lambda m: f"{m.group(1)} {NUMBER_SPELLINGS[m.group(2).lower()]}",
+        converted, flags=re.IGNORECASE,
+    )
+    # Un réglage : « le son à cinquante », « luminosité à trente ».
+    converted = re.sub(
+        rf"(\b(?:son|volume|luminosit[ée])\s+(?:a|à|au|sur)\s+)({_NUMBER})(?![\w-])",
+        lambda m: f"{m.group(1)}{NUMBER_SPELLINGS[m.group(2).lower()]}",
+        converted, flags=re.IGNORECASE,
+    )
+    return converted
+
+
 def normalize_spoken_time(text: str) -> str:
-    """Ramène les heures dictées à la forme 7h30 (« 7 heures et demie », « midi », « 20 heures »)."""
-    normalized = text.replace("’", "'")
+    """Ramène les heures dictées à la forme 7h30 (« 7 heures et demie », « midi », « sept heures »)."""
+    normalized = spoken_numbers(text.replace("’", "'"))
 
     def quarter_to(match: re.Match) -> str:
         return f"{(int(match.group(1)) - 1) % 24}h45"
@@ -56,7 +114,7 @@ def normalize_spoken_time(text: str) -> str:
 
 def extract_relative_delay(text: str) -> timedelta | None:
     """Extrait une durée (« 10 minutes », « une demi-heure », « 1h30 », « 45 secondes »)."""
-    folded = fold(text)
+    folded = fold(spoken_numbers(text))
     for word, value in NUMBER_WORDS.items():
         folded = re.sub(rf"\b{word}\s+(?=minutes?\b|heures?\b|secondes?\b)", f"{value} ", folded)
 

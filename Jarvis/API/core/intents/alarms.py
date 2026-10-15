@@ -56,7 +56,7 @@ def parse_timer(text: str) -> dict | None:
 
     if re.search(r"\b(?:supprime|annule|arrete|stoppe|coupe)\b", folded):
         return {"action": "delete_timers"}
-    if re.search(r"\bcombien de temps\b|\breste[- ]t[- ]il\b|\b(?:temps )?restant\b|\bou en est\b|\bquels? (?:sont )?(?:mes |les )?minuteurs\b", folded):
+    if re.search(r"\bcombien de temps\b|\breste[- ]t[- ]il\b|\b(?:il )?reste combien\b|\b(?:temps )?restant\b|\bou en est\b|\bquels? (?:sont )?(?:mes |les )?minuteurs\b", folded):
         return {"action": "list_alarms"}
 
     delay = extract_relative_delay(text)
@@ -82,7 +82,7 @@ def parse_timer(text: str) -> dict | None:
 def parse_reminder(text: str) -> dict | None:
     """Interprète un rappel (« rappelle-moi dans 20 minutes de sortir le gâteau »)."""
     lead = re.search(
-        r"\b(?:rappelle|rappelez)[- ]moi\b|\bfai(?:s|tes)[- ]moi penser\b|\bpense à me rappeler\b"
+        r"\b(?:rappelle|rappelez|rappel)[- ]moi\b|\bfai(?:s|tes)[- ]moi penser\b|\bpense à me rappeler\b"
         r"|\b(?:pr[ée]viens|pr[ée]venez|avertis|avertissez|alerte|alertez)[- ]moi\b",
         text,
         flags=re.IGNORECASE,

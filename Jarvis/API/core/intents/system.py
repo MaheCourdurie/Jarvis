@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from persona import fold
+from core.intents.common import spoken_numbers
 
 
 WEB_ONLY_SITES = {
@@ -31,7 +32,7 @@ WEB_ONLY_SITES = {
 
 def parse_system(text: str) -> dict | None:
     """Interprète les demandes de pilotage du poste : diagnostic, volume, applications, web, veille."""
-    folded = fold(text).strip(" .!?")
+    folded = fold(spoken_numbers(text)).strip(" .!?")
     cleaned = text.strip().strip(".!?").strip()
 
     # Diagnostic

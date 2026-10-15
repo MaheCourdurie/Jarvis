@@ -1,7 +1,7 @@
 """L'examen des agents : des phrases de tous les jours, et l'action que chacun doit en tirer.
 
 C'est leur « entraînement » : chaque tournure qu'un agent comprend mal est ajoutée ici,
-puis apprise dans core/intents.py. L'examen garantit qu'elle ne sera jamais oubliée.
+puis apprise dans le fichier de phrases de l'agent (core/intents/<agent>.py). L'examen garantit qu'elle ne sera jamais oubliée.
 """
 
 import pytest
@@ -269,6 +269,138 @@ EXAM = {
         ("Pourquoi le ciel est bleu ?", None),
         ("Merci pour ton aide, c'était parfait", None),
     ],
+    # Telles que Whisper les transcrit : minuscules, sans ponctuation, nombres en lettres,
+    # « Jarvis » au début ou à la fin, fautes courantes (« rappel moi », « met une alarme »).
+    "whisper : messagerie": [
+        ('lis moi mes mails', 'mail_resume'),
+        ("jarvis est ce que j'ai des nouveaux mails", 'mail_resume'),
+        ("j'ai reçu des mails", 'mail_resume'),
+        ('quoi de neuf dans ma boîte mail', 'mail_resume'),
+        ("c'est quoi mon dernier mail", 'mail_last'),
+        ("envoie un mail à paul pour lui dire que j'arrive dans dix minutes", 'send_mail'),
+        ("réponds à paul que c'est ok", 'reply_mail'),
+        ('lis moi le mail de sophie', 'read_mail'),
+        ('archive le dernier mail jarvis', 'archive_mail'),
+    ],
+    "whisper : agenda": [
+        ("qu'est ce que j'ai de prévu demain", 'events_range'),
+        ("j'ai quoi aujourd'hui", 'events_range'),
+        ("c'est quoi mon programme cette semaine", 'events_week'),
+        ('ajoute un rendez vous chez le dentiste jeudi à quinze heures', 'add_event'),
+        ('mets une réunion demain à dix heures pour le budget', 'add_event'),
+        ('décale le dentiste à seize heures', 'move_event'),
+        ('est ce que je suis libre demain', 'availability_week'),
+        ('rajoute un déjeuner avec maman dimanche à midi', 'add_event'),
+    ],
+    "whisper : alarmes": [
+        ('réveille moi demain à sept heures', 'set_alarm'),
+        ('réveille-moi à six heures et demie', 'set_alarm'),
+        ('met une alarme à huit heures', 'set_alarm'),
+        ('mets un minuteur de dix minutes', 'set_alarm'),
+        ('minuteur trois minutes pour les pâtes', 'set_alarm'),
+        ("lance un minuteur d'une demi heure", 'set_alarm'),
+        ('rappelle moi dans vingt minutes de sortir le gâteau', 'set_alarm'),
+        ("rappel moi d'appeler le médecin à quatorze heures", 'set_alarm'),
+        ('jarvis encore cinq minutes', 'snooze_alarm'),
+        ('annule mon minuteur', 'delete_timers'),
+        ('il reste combien sur le minuteur', 'list_alarms'),
+        ('réveille moi tous les matins à sept heures', 'set_alarm'),
+        ('supprime toutes les alarmes', 'delete_alarms_all'),
+    ],
+    "whisper : poste": [
+        ('monte le son jarvis', 'volume'),
+        ('baisse un peu le son', 'volume'),
+        ('mets le son à cinquante', 'volume'),
+        ('ouvre safari', 'open_app'),
+        ('lance spotify', 'open_app'),
+        ('ferme google chrome', 'quit_app'),
+        ('ouvre youtube', 'open_url'),
+        ('ouvre gmail', 'open_url'),
+        ("verrouille l'ordi", 'lock_screen'),
+        ('active le mode sombre jarvis', 'dark_mode'),
+        ('coupe le bluetooth', 'bluetooth'),
+        ('il me reste combien de batterie', 'system_status'),
+    ],
+    "whisper : informations": [
+        ('quelle heure il est', 'time'),
+        ('il est quelle heure jarvis', 'time'),
+        ("on est le combien aujourd'hui", 'date'),
+        ('quel temps il fait', 'weather'),
+        ("il va pleuvoir aujourd'hui", 'weather'),
+        ('quel temps fera t il demain à lyon', 'weather'),
+        ('météo ce soir', 'weather'),
+        ("est-ce qu'il va pleuvoir cet après-midi", 'weather'),
+        ('météo heure par heure', 'weather'),
+        ('à quelle heure se lève le soleil demain', 'sun'),
+        ('fais moi le point sur la journée', 'briefing'),
+    ],
+    "whisper : web": [
+        ('cherche les horaires de la piscine de colomiers', 'web_answer'),
+        ('qui a gagné le match hier soir', 'web_answer'),
+        ("c'est quoi les actus du jour", 'web_answer'),
+        ('combien coûte une ps5', 'web_answer'),
+        ('où acheter un iphone 16 le moins cher', 'web_answer'),
+        ('compare les prix du dyson v15', 'web_answer'),
+        ('ouvre la page wikipédia napoléon', 'web_search'),
+        ('ouvre wikipédia à la page tour eiffel', 'web_search'),
+        ('ouvre napoléon sur wikipédia', 'web_search'),
+        ('résume moi cette page https://www.example.com/article', 'summarize_url'),
+    ],
+    "whisper : savoir": [
+        ('comment on dit merci beaucoup en italien', 'translate'),
+        ('traduis bonne nuit en anglais', 'translate'),
+        ('souviens toi que je suis végétarien', 'remember'),
+        ("qu'est ce que tu sais sur moi", 'recall'),
+        ('regarde mon écran jarvis', 'look_screen'),
+        ('décris la photo plage.jpg', 'look_image'),
+        ("décris la capture d'écran", 'look_screen'),
+    ],
+    "whisper : organisation": [
+        ('ajoute du pain à ma liste de courses', 'add_to_list'),
+        ('prends une note acheter des piles', 'add_note'),
+        ('combien de temps pour aller à blagnac', 'travel_time'),
+        ("je mets combien de temps à pied jusqu'à la gare", 'travel_time'),
+    ],
+    "whisper : création": [
+        ('crée moi un script python qui renomme mes photos', 'write_code'),
+        ('fais moi un site pour un garage', 'design_page'),
+        ('dessine un logo pour ma chaîne youtube', 'design_logo'),
+        ('propose moi trois logos pour mon club de foot', 'design_logo'),
+        ('la deuxième', 'choose_creation'),
+        ('je prends la première', 'choose_creation'),
+        ('écris les tests du script', 'code_tests'),
+        ('corrige le fichier main.py', 'fix_code'),
+        ('explique moi le fichier app.js', 'explain_code'),
+        ('rédige une lettre de résiliation en pdf', 'write_document'),
+        ('exporte le en pdf', 'export_pdf'),
+        ('fais en des icônes', 'make_icons'),
+        ('ajoute un bouton de contact à la page', 'revise_creation'),
+        ('reviens à la version précédente', 'previous_version'),
+    ],
+    "whisper : routines et maison": [
+        ('lance le mode travail', 'run_routine'),
+        ('lance la routine bonne nuit tous les soirs à vingt deux heures', 'schedule_routine'),
+        ('programme le mode travail en semaine à neuf heures', 'schedule_routine'),
+        ('ne lance plus la routine bonne nuit automatiquement', 'unschedule_routine'),
+        ('allume la lumière de la chambre', 'run_shortcut'),
+        ('éteins tout dans le salon', 'run_shortcut'),
+    ],
+    "whisper : musique": [
+        ('mets de la musique jarvis', 'music'),
+        ('chanson suivante', 'music'),
+        ('mets du daft punk', 'music'),
+        ("c'est quoi cette musique", 'music'),
+        ('mets en pause', 'music'),
+    ],
+    "whisper : conversation": [
+        ('raconte moi une blague', None),
+        ('pourquoi le ciel est bleu', None),
+        ("t'es qui toi", None),
+        ("qu'est ce que tu penses de star wars", None),
+        ('explique moi la relativité', None),
+        ("la deuxième guerre mondiale c'était quand", None),
+        ('fais des tests de grossesse', None),
+    ],
 }
 
 CASES = [(agent, phrase, expected) for agent, items in EXAM.items() for phrase, expected in items]
@@ -290,6 +422,22 @@ def test_event_titles_are_meaningful():
         "Note dans mon agenda : match de foot samedi à 14h": "Match de foot",
         "Ajoute un rendez-vous chez le dentiste demain à 15h": "Rendez-vous chez le dentiste",
         "Programme un déjeuner avec Sophie vendredi à midi": "Déjeuner avec Sophie",
+        "Ajoute une réunion demain à 10h pour le budget": "Réunion : budget",
+        "mets une réunion demain à quatorze heures pour parler du budget": "Réunion : budget",
+        "Planifie une réunion avec Paul jeudi à 15h pour le budget": "Réunion avec Paul : budget",
+        "Crée un événement lundi de 14h à 16h pour réunion client": "Réunion client",
     }
     for phrase, title in titles.items():
         assert detect_action(phrase)["params"]["title"] == title
+
+
+def test_spoken_numbers_become_digits_only_before_a_unit():
+    from core.intents.common import spoken_numbers
+
+    assert spoken_numbers("réveille-moi à sept heures trente") == "réveille-moi à 7 heures 30"
+    assert spoken_numbers("dans vingt-cinq minutes") == "dans 25 minutes"
+    assert spoken_numbers("à vingt et une heures") == "à 21 heures"
+    assert spoken_numbers("mets le son à cinquante") == "mets le son à 50"
+    assert spoken_numbers("la réunion des deux équipes") == "la réunion des deux équipes"
+    params = detect_action("réveille moi demain à sept heures")["params"]
+    assert params["when"].endswith("T07:00:00")
